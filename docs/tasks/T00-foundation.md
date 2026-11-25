@@ -6,8 +6,11 @@ Roadmap: [T0](../sdlc/roadmap.md) · Spec: [spec.md](../sdlc/spec.md)
 
 - `docs/sdlc/{intent,spec,roadmap}.md`, `docs/architecture.html` (target architecture page)
 - `REVIEW.md`, `.claude/agents/verifier.md`
-- `pyproject.toml`, `Makefile`, `src/pipeline/__init__.py`, `tests/unit/test_smoke.py`
-- `.github/workflows/ci.yml`: run on `master`, add unit tests
+- `pyproject.toml`, `uv.lock`, `Makefile`, `src/pipeline/__init__.py`, `mock_downstream/__init__.py`,
+  `tests/__init__.py`, `tests/unit/test_smoke.py`
+- Hub kit (`kit.py apply`): `.claude/kit.json` (docs-check hook), `.github/pull_request_template.md`,
+  `.github/workflows/ci.yml`. CI is changed to run on `master` and to call `make check`
+- Docs gate: ruff `D100`–`D103` (every public module, class and function has a docstring) is part of `make check`
 - `AGENTS.md`: verification block and "Things Claude gets wrong"
 
 ## Order of work
@@ -19,7 +22,8 @@ Roadmap: [T0](../sdlc/roadmap.md) · Spec: [spec.md](../sdlc/spec.md)
 
 ## Risks
 
-- CI and local commands drift. Mitigation: CI calls the same `uv run` commands as `make check`.
+- CI and local commands drift. Mitigation: CI runs `make check` itself, and ruff comes from `uv.lock` (`uv run`, not `uvx`).
+- The docs-check excludes live in `Makefile` and `.claude/kit.json` (hub-managed). Keep the two in step.
 
 ## Proof
 
