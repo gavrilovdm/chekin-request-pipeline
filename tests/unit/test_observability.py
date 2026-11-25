@@ -33,6 +33,42 @@ async def test_intake_outcomes_are_counted():
     assert value("pipeline_intake_total", outcome="unauthorized") == before["unauthorized"] + 1
 
 
+async def test_rate_limited_and_conflict_outcomes_are_counted():
+    before = {o: value("pipeline_intake_total", outcome=o) for o in ("rate_limited", "conflict", "invalid")}
+    async with client() as api:
+        for i in range(3):
+            await post(api, key="key-noisy", idem=f"rl-{i}")
+        await post(api, idem="c-1")
+        await post(api, idem="c-1", body={"type": "guest.register", "data": {"name": "Bob"}})
+
+    assert value("pipeline_intake_total", outcome="rate_limited") == before["rate_limited"] + 1
+    assert value("pipeline_intake_total", outcome="conflict") == before["conflict"] + 1
+    assert value("pipeline_intake_total", outcome="invalid") == before["invalid"]
+
+
+async def test_unhandled_failure_is_counted_as_error():
+    class BrokenStore(FakeStore):
+        async def create(self, *args):
+            raise ConnectionError("postgres down")
+
+    store = BrokenStore()
+    deps = ApiDeps(store=store, publisher=FakePublisher(), tenants=TenantCache(store, ttl=60),
+                   limiter=TenantRateLimiter(), shedder=FixedShedder())
+    before = value("pipeline_intake_total", outcome="error")
+    transport = httpx.ASGITransport(app=create_app(deps), raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        response = await post(api, idem="err-1")
+
+    assert response.status_code == 500
+    assert value("pipeline_intake_total", outcome="error") == before + 1
+
+
+def test_lowercase_log_level_is_accepted():
+    from pipeline.observability import configure_logging
+
+    configure_logging("info")
+
+
 async def test_shed_requests_are_counted():
     before = value("pipeline_intake_total", outcome="shed")
     async with client(shedder=FixedShedder(retry_after=5)) as api:

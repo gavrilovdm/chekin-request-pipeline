@@ -12,6 +12,7 @@ from prometheus_client import Counter, Gauge, Histogram
 
 def configure_logging(level: str = "INFO") -> None:
     """JSON logs to stdout: one event per line, ready for any log pipeline."""
+    level = level.upper()  # "info" from an env var must not crash every service at start
     logging.basicConfig(format="%(message)s", stream=sys.stdout, level=level)
     logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per HTTP call is noise at this volume
     structlog.configure(

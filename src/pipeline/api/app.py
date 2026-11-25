@@ -89,8 +89,14 @@ def create_app(deps: ApiDeps | None = None, lifespan: Any = None) -> FastAPI:
         if request.method != "POST" or request.url.path != "/v1/requests":
             return await call_next(request)
         started = time.perf_counter()
-        response = await call_next(request)
-        if response.status_code == 202:
+        try:
+            response = await call_next(request)
+        except Exception:
+            INTAKE.labels("error").inc()  # an unhandled failure (e.g. Postgres down) must still be visible
+            raise
+        if response.headers.get("X-Intake-Outcome") == "conflict":
+            INTAKE.labels("conflict").inc()
+        elif response.status_code == 202:
             replayed = response.headers.get("Idempotent-Replayed") == "true"
             INTAKE.labels("replayed" if replayed else "accepted").inc()
             INTAKE_SECONDS.observe(time.perf_counter() - started)
@@ -141,7 +147,8 @@ def create_app(deps: ApiDeps | None = None, lifespan: Any = None) -> FastAPI:
         created = await deps.store.create(caller.id, idempotency_key, body, digest)
         if not created.created:
             if created.payload_hash != digest:
-                raise HTTPException(422, "Idempotency-Key was already used with a different body")
+                raise HTTPException(422, "Idempotency-Key was already used with a different body",
+                                    {"X-Intake-Outcome": "conflict"})
             response.headers["Idempotent-Replayed"] = "true"
         else:
             await _publish(deps, created.id)

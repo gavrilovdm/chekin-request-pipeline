@@ -13,10 +13,12 @@ Roadmap: [T7](../sdlc/roadmap.md) · Spec: "operators can see when something nee
   - `/readyz`: Postgres and RabbitMQ checks. It answers `503` when either fails.
 - `src/pipeline/worker/consumer.py`: handled-by-result counter, attempt duration histogram, in-flight gauge.
 - `src/pipeline/dispatcher/sweeper.py`, `src/pipeline/dispatcher/webhooks.py`: republished-by-status counter, webhook-outcome counter.
-- `src/pipeline/dispatcher/gauges.py` and `PgDispatchStore.health_snapshot()`: every 10 s, the dispatcher sets three gauges:
+- `src/pipeline/dispatcher/gauges.py` and `PgDispatchStore.health_snapshot()`: every 10 s, the dispatcher sets four gauges:
   - the `needs_human` count;
   - the age of the oldest unfinished request (lag that the user can feel);
-  - the number of pending webhooks.
+  - the number of pending webhooks;
+  - the queue depth.
+- `docker-compose.yml`: the dispatcher's `/metrics` is published on host port 9101.
 - `src/pipeline/main.py`: logging setup. Worker and dispatcher expose `/metrics` on `metrics_port` (9100), and the dispatcher's is published on host port 9101.
 - `migrations/003_unfinished_index.sql`: a partial index on `created_at` for unfinished requests, which keeps the oldest-unfinished query cheap.
 - `src/pipeline/config.py`: `log_level`. The `httpx` logger is set to WARNING.
@@ -42,6 +44,14 @@ Roadmap: [T7](../sdlc/roadmap.md) · Spec: "operators can see when something nee
 - **`/healthz` and `/readyz` answer different questions.**
   - `/healthz` is liveness: is the process up? A restart fixes a failure here.
   - `/readyz` is readiness: can the process serve now? The load balancer drains a replica that fails it.
+
+## Series added beyond the first draft
+
+- `pipeline_publish_failures_total` (API): publishes that the sweeper will recover.
+- `pipeline_republish_failures_total` (sweeper).
+- `pipeline_poison_messages_total` (worker): messages sent to the DLQ.
+- `pipeline_intake_total{outcome="conflict"}`: an Idempotency-Key reused with a different body, kept apart from schema errors (`invalid`).
+- `pipeline_intake_total{outcome="error"}`: unhandled 500s, counted in the middleware.
 
 ## Risks
 

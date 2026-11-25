@@ -21,14 +21,31 @@ async def test_api_exposes_intake_metrics_and_is_ready():
     assert ready.status_code == 200 and ready.json() == {"postgres": True, "rabbitmq": True}
 
 
-async def test_dispatcher_exposes_health_gauges():
-    async with httpx.AsyncClient(timeout=10) as client:
-        for _ in range(30):  # gauges refresh every 10 s
-            text = (await client.get(DISPATCHER_METRICS)).text
-            if "pipeline_oldest_unfinished_seconds " in text and "pipeline_queue_depth " in text:
-                break
-            await asyncio.sleep(0.5)
+def gauge(text: str, name: str) -> float:
+    line = next(line for line in text.splitlines() if line.startswith(name + " "))
+    return float(line.split()[1])
 
-    for series in ("pipeline_needs_human", "pipeline_oldest_unfinished_seconds", "pipeline_webhooks_pending",
-                   "pipeline_queue_depth", "pipeline_republished_total"):
-        assert series in text
+
+async def test_dispatcher_gauges_reflect_the_database(pool):
+    """Real values, not the default zeros: an hour-old waiting retry and a request that needs a human."""
+    waiting, stuck = uuid4(), uuid4()
+    rows = [(waiting, "retry_scheduled", "now() + interval '1 hour'"), (stuck, "needs_human", "NULL")]
+    for rid, status, next_at in rows:
+        await pool.execute(
+            f"""INSERT INTO requests (id, tenant_id, idempotency_key, payload_hash, payload, status, attempt,
+                                     next_attempt_at, created_at)
+                VALUES ($1, 'tenant-b', $2, 'h', '{{}}', $3, 1, {next_at}, now() - interval '1 hour')""",
+            rid, f"gauge-{rid}", status,
+        )
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            for _ in range(60):  # gauges refresh every 10 s
+                text = (await client.get(DISPATCHER_METRICS)).text
+                oldest, needs_human = gauge(text, "pipeline_oldest_unfinished_seconds"), gauge(text, "pipeline_needs_human")
+                if oldest >= 3500 and needs_human >= 1:
+                    break
+                await asyncio.sleep(0.5)
+        assert gauge(text, "pipeline_oldest_unfinished_seconds") >= 3500
+        assert gauge(text, "pipeline_needs_human") >= 1
+    finally:
+        await pool.execute("UPDATE requests SET status = 'done' WHERE id = ANY($1::uuid[])", [waiting, stuck])
