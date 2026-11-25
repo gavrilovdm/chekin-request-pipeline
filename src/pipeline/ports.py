@@ -37,6 +37,62 @@ class RequestRepository(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class TenantRecord:
+    """What the API needs to know about the caller."""
+
+    id: str
+    rate_per_sec: float
+    burst: int
+
+
+@dataclass(frozen=True)
+class CreateResult:
+    """Outcome of an idempotent insert. ``created`` is False on a replay of an existing Idempotency-Key."""
+
+    id: UUID
+    created: bool
+    payload_hash: str
+
+
+@dataclass(frozen=True)
+class RequestView:
+    """A request as its tenant sees it."""
+
+    id: UUID
+    status: str
+    attempt: int
+    result: dict[str, Any] | None
+    last_error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class IntakeStore(Protocol):
+    """Request state as the intake API needs it."""
+
+    async def tenant_by_key_hash(self, key_hash: str) -> TenantRecord | None:
+        """Look up the tenant owning an API key, by the key's sha256."""
+        ...
+
+    async def create(self, tenant_id: str, idempotency_key: str, payload: dict[str, Any], payload_hash: str
+                     ) -> CreateResult:
+        """Insert a new request, or return the existing one for the same (tenant, idempotency key)."""
+        ...
+
+    async def get(self, tenant_id: str, request_id: UUID) -> RequestView | None:
+        """Fetch a request; ``None`` if it does not exist or belongs to another tenant."""
+        ...
+
+
+class Publisher(Protocol):
+    """Puts a request id on the work queue."""
+
+    async def publish(self, request_id: UUID) -> None:
+        """Publish and wait for the broker's confirm; raise on failure or timeout."""
+        ...
+
+
 class Processor(Protocol):
     """Does the actual work for a request. Raises ``RetryableError`` or ``PermanentError`` on failure."""
 

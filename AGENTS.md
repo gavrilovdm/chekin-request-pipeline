@@ -56,4 +56,5 @@ task touches Docker services) into the PR under "How checked".
 
 ## Things Claude gets wrong
 
-- (empty: add a line when the same mistake happens twice)
+- Plan drift (T0, T1): a commit changed files or settings its task plan did not list. Before committing, diff the
+  plan's "Files that change" against `git status` and update the plan in the same commit.
