@@ -93,6 +93,45 @@ class Publisher(Protocol):
         ...
 
 
+class SweepStore(Protocol):
+    """Finds requests that need (re-)publishing and stamps them, so one sweep does not repeat the next."""
+
+    async def take_due(self, stale_after: timedelta, limit: int) -> list[tuple[UUID, str]]:
+        """Up to ``limit`` (id, status) pairs: lost publishes, due retries, expired leases."""
+        ...
+
+
+@dataclass(frozen=True)
+class WebhookJob:
+    """A final state to report to a tenant's webhook URL."""
+
+    request_id: UUID
+    tenant_id: str
+    url: str
+    secret: str
+    status: str
+    result: dict[str, Any] | None
+    error: str | None
+    attempt: int
+    webhook_attempt: int  # deliveries already tried
+
+
+class WebhookStore(Protocol):
+    """The outbox side of the requests table."""
+
+    async def claim_due(self, limit: int, visibility: timedelta) -> list[WebhookJob]:
+        """Take due jobs and hide them for ``visibility`` so concurrent senders do not double-send."""
+        ...
+
+    async def mark_delivered(self, request_id: UUID) -> None:
+        """The tenant acknowledged the webhook."""
+        ...
+
+    async def mark_failed_attempt(self, request_id: UUID, next_at: datetime | None) -> None:
+        """Delivery failed: retry at ``next_at``, or give up when it is ``None``."""
+        ...
+
+
 class Processor(Protocol):
     """Does the actual work for a request. Raises ``RetryableError`` or ``PermanentError`` on failure."""
 
