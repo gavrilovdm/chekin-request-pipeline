@@ -1,0 +1,51 @@
+# Prometheus alert rules for the request pipeline. Thresholds assume ~1M requests/hour; tune per environment.
+# Every alert names the symptom a tenant would feel and the first thing to check.
+groups:
+  - name: request-pipeline
+    rules:
+      - alert: RequestsWaitingForHuman
+        expr: increase(pipeline_needs_human[15m]) > 0
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $value }} new requests exhausted their attempts"
+          action: "Check pipeline_handled_total{result='retry_scheduled'} and the downstream; replay after the fix."
+
+      - alert: OldestUnfinishedRequestTooOld
+        # The single best health signal: grows when workers, queue, sweeper or downstream are broken,
+        # whatever the traffic volume.
+        expr: pipeline_oldest_unfinished_seconds > 300
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "A request has not reached a final state for {{ $value | humanizeDuration }}"
+          action: "Check worker count and pipeline_queue_depth; then downstream error rate."
+
+      - alert: IntakeShedding
+        expr: rate(pipeline_intake_total{outcome="shed"}[5m]) > 0
+        for: 5m
+        labels: {severity: ticket}
+        annotations:
+          summary: "API is refusing work because the queue is above max_queue_depth"
+          action: "Scale workers (KEDA on queue depth) or raise downstream throughput."
+
+      - alert: PublishFailuresAtIntake
+        expr: rate(pipeline_publish_failures_total[5m]) > 1
+        for: 5m
+        labels: {severity: ticket}
+        annotations:
+          summary: "API cannot publish to RabbitMQ; requests are accepted and wait for the sweeper"
+          action: "Check RabbitMQ health; latency rises by stale_after_s until fixed."
+
+      - alert: WebhookDeliveryFailing
+        expr: rate(pipeline_webhooks_total{outcome="failed"}[15m]) > 0
+        labels: {severity: ticket}
+        annotations:
+          summary: "Webhooks given up after max attempts"
+          action: "Find the tenant in logs (webhook.gave_up); results stay available via GET."
+
+      - alert: PoisonMessages
+        expr: increase(pipeline_poison_messages_total[15m]) > 0
+        labels: {severity: ticket}
+        annotations:
+          summary: "Unparseable messages in requests.dead"
+          action: "Inspect requests.dead; a producer is publishing something other than request ids."

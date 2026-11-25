@@ -1,11 +1,13 @@
 """RabbitMQ transport for the worker: turns deliveries into ``RequestHandler.handle`` calls, with graceful shutdown."""
 
 import asyncio
+import time
 from typing import Any, Protocol
 from uuid import UUID
 
 import structlog
 
+from pipeline.observability import ATTEMPT_SECONDS, HANDLED, IN_FLIGHT, POISON
 from pipeline.worker.handler import HandleResult
 
 log = structlog.get_logger(__name__)
@@ -57,14 +59,22 @@ class Consumer:
             request_id = UUID(message.body.decode())
         except (ValueError, UnicodeDecodeError):
             log.error("consumer.poison_message", body=message.body[:100])
+            POISON.inc()
             await message.reject(requeue=False)
             return
+        started = time.perf_counter()
+        IN_FLIGHT.inc()
         try:
-            await self._handler.handle(request_id)
+            result = (await self._handler.handle(request_id)).value
         except asyncio.CancelledError:
             raise
         except Exception:
+            result = "error"
             log.exception("consumer.handler_failed", request_id=str(request_id))
+        finally:
+            IN_FLIGHT.dec()
+        HANDLED.labels(result).inc()
+        ATTEMPT_SECONDS.observe(time.perf_counter() - started)
         try:
             await message.ack()
         except Exception:  # e.g. the channel was re-opened after a broker restart; a redelivery is harmless

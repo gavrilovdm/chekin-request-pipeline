@@ -14,9 +14,11 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 
 import aio_pika
+import asyncpg
 import httpx
 import structlog
 from fastapi import FastAPI
+from prometheus_client import start_http_server
 
 from pipeline.adapters.downstream import HttpProcessor
 from pipeline.adapters.postgres import PgDispatchStore, PgIntakeStore, PgRequestRepository, create_pool
@@ -26,9 +28,11 @@ from pipeline.api.auth import TenantCache
 from pipeline.api.rate_limit import TenantRateLimiter
 from pipeline.api.shedding import LoadShedder
 from pipeline.config import Settings
+from pipeline.dispatcher.gauges import refresh_gauges
 from pipeline.dispatcher.sweeper import Sweeper
 from pipeline.dispatcher.webhooks import WebhookSender
 from pipeline.domain.retry_policy import RetryPolicy
+from pipeline.observability import configure_logging
 from pipeline.worker.consumer import Consumer
 from pipeline.worker.handler import RequestHandler
 
@@ -36,6 +40,7 @@ from pipeline.worker.handler import RequestHandler
 def api_app() -> FastAPI:
     """Intake API with Postgres, RabbitMQ and the load shedder opened for the app's lifetime."""
     settings = Settings()
+    configure_logging(settings.log_level)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -52,6 +57,7 @@ def api_app() -> FastAPI:
             tenants=TenantCache(store, settings.tenant_cache_ttl_s),
             limiter=TenantRateLimiter(),
             shedder=shedder,
+            readiness=lambda: _readiness(pool, connection),
         )
         shedding = asyncio.create_task(shedder.run())
         try:
@@ -66,8 +72,18 @@ def api_app() -> FastAPI:
     return create_app(lifespan=lifespan)
 
 
+async def _readiness(pool: asyncpg.Pool, connection: aio_pika.abc.AbstractRobustConnection) -> dict[str, bool]:
+    try:
+        postgres = await asyncio.wait_for(pool.fetchval("SELECT 1"), timeout=1.0) == 1
+    except Exception:
+        postgres = False
+    return {"postgres": postgres, "rabbitmq": not connection.is_closed}
+
+
 async def run_worker(settings: Settings) -> None:
     """Worker process: consume request ids until SIGTERM, then drain gracefully."""
+    configure_logging(settings.log_level)
+    start_http_server(settings.metrics_port)
     pool = await create_pool(settings.database_url, settings.db_pool_size, settings.db_command_timeout_s)
     connection = await aio_pika.connect_robust(settings.amqp_url)
     channel = await connection.channel()
@@ -95,15 +111,18 @@ async def run_worker(settings: Settings) -> None:
 
 
 async def run_dispatcher(settings: Settings) -> None:
-    """Dispatcher process: sweeper and webhook sender loops until SIGTERM."""
+    """Dispatcher process: sweeper, webhook sender and health gauges until SIGTERM."""
+    configure_logging(settings.log_level)
+    start_http_server(settings.metrics_port)
     pool = await create_pool(settings.database_url, settings.db_pool_size, settings.db_command_timeout_s)
     connection = await aio_pika.connect_robust(settings.amqp_url)
     channel = await open_channel(connection)
     await declare_topology(channel)
     store = PgDispatchStore(pool)
+    publisher = RabbitPublisher(channel, settings.publish_timeout_s)
     sweeper = Sweeper(
         store,
-        RabbitPublisher(channel, settings.publish_timeout_s),
+        publisher,
         stale_after=timedelta(seconds=settings.stale_after_s),
         batch=settings.sweep_batch,
     )
@@ -122,6 +141,7 @@ async def run_dispatcher(settings: Settings) -> None:
         await asyncio.gather(
             _every(settings.sweep_interval_s, sweeper.sweep_once, settings.sweep_batch, stop, "sweeper"),
             _every(settings.sweep_interval_s / 2, sender.send_due_once, settings.sweep_batch, stop, "webhooks"),
+            _every(10.0, lambda: refresh_gauges(store, publisher.queue_depth), 1, stop, "gauges"),
         )
     finally:
         await connection.close()

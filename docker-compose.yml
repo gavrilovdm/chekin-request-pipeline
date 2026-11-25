@@ -37,6 +37,7 @@ services:
     <<: *app
     command: ["python", "-m", "pipeline", "dispatcher"]
     stop_grace_period: 10s
+    ports: ["9101:9100"]  # gauges: needs_human, oldest unfinished, webhooks pending, queue depth
 
   downstream-mock:
     image: chekin-pipeline:dev

@@ -184,8 +184,20 @@ class PgDispatchStore:
          WHERE id = $1 AND webhook_pending AND webhook_attempt = $2
     """
 
+    _HEALTH = """
+        SELECT (SELECT count(*) FROM requests WHERE status = 'needs_human') AS needs_human,
+               (SELECT COALESCE(EXTRACT(EPOCH FROM now() - min(created_at)), 0) FROM requests
+                 WHERE status IN ('received', 'processing', 'retry_scheduled')) AS oldest_unfinished_s,
+               (SELECT count(*) FROM requests WHERE webhook_pending) AS webhooks_pending
+    """
+
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
+
+    async def health_snapshot(self) -> dict[str, float]:
+        """Numbers behind the dispatcher's gauges; each subquery is served by a partial index."""
+        row = await self._pool.fetchrow(self._HEALTH)
+        return {key: float(row[key]) for key in ("needs_human", "oldest_unfinished_s", "webhooks_pending")}
 
     async def take_due(self, stale_after: timedelta, limit: int) -> list[tuple[UUID, str]]:
         """Stamp and return requests that need publishing."""

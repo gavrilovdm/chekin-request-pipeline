@@ -10,6 +10,7 @@ import httpx
 import structlog
 
 from pipeline.domain.retry_policy import RetryPolicy
+from pipeline.observability import WEBHOOKS
 from pipeline.ports import Clock, WebhookJob, WebhookStore
 from pipeline.worker.handler import utcnow
 
@@ -83,13 +84,16 @@ class WebhookSender:
                 delivered, detail = False, type(exc).__name__
 
         if delivered:
+            WEBHOOKS.labels("delivered").inc()
             await self._store.mark_delivered(job.request_id, job.webhook_attempt)
             return
         attempt = job.webhook_attempt + 1
         if attempt >= self._policy.max_attempts:
+            WEBHOOKS.labels("failed").inc()
             log.error("webhook.gave_up", request_id=str(job.request_id), tenant=job.tenant_id, detail=detail)
             await self._store.mark_failed_attempt(job.request_id, job.webhook_attempt, None)
         else:
+            WEBHOOKS.labels("retry").inc()
             log.warning("webhook.retry", request_id=str(job.request_id), tenant=job.tenant_id, detail=detail)
             next_at = self._clock() + self._policy.delay(attempt)
             await self._store.mark_failed_attempt(job.request_id, job.webhook_attempt, next_at)
