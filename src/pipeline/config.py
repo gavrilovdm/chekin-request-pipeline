@@ -37,3 +37,4 @@ class Settings(BaseSettings):
     webhook_per_tenant_concurrency: int = 4
 
     metrics_port: int = 9100
+    log_level: str = "INFO"

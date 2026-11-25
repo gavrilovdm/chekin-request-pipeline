@@ -2,21 +2,29 @@
 
 import hashlib
 import json
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Annotated, Any, Protocol
 from uuid import UUID
 
 import structlog
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field, ValidationError
 
 from pipeline.api.auth import TenantCache
 from pipeline.api.rate_limit import TenantRateLimiter
+from pipeline.observability import INTAKE, INTAKE_SECONDS, PUBLISH_FAILURES
 from pipeline.ports import IntakeStore, Publisher, TenantRecord
 
 log = structlog.get_logger(__name__)
 
 MAX_BODY_BYTES = 64 * 1024
+
+# POST /v1/requests status code -> intake outcome label (bounded set; 202 splits into accepted / replayed).
+_OUTCOMES = {400: "invalid", 401: "unauthorized", 413: "too_large", 422: "invalid", 429: "rate_limited", 503: "shed"}
 
 
 class Shedder(Protocol):
@@ -36,6 +44,7 @@ class ApiDeps:
     tenants: TenantCache
     limiter: TenantRateLimiter
     shedder: Shedder
+    readiness: Callable[[], Awaitable[dict[str, bool]]] | None = None  # per-dependency checks for /readyz
 
 
 class RequestIn(BaseModel):
@@ -74,6 +83,20 @@ def create_app(deps: ApiDeps | None = None, lifespan: Any = None) -> FastAPI:
     app = FastAPI(title="Request pipeline API", version="0.1.0", lifespan=lifespan)
     if deps is not None:
         app.state.deps = deps
+
+    @app.middleware("http")
+    async def count_intake(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        if request.method != "POST" or request.url.path != "/v1/requests":
+            return await call_next(request)
+        started = time.perf_counter()
+        response = await call_next(request)
+        if response.status_code == 202:
+            replayed = response.headers.get("Idempotent-Replayed") == "true"
+            INTAKE.labels("replayed" if replayed else "accepted").inc()
+            INTAKE_SECONDS.observe(time.perf_counter() - started)
+        else:
+            INTAKE.labels(_OUTCOMES.get(response.status_code, "error")).inc()
+        return response
 
     def get_deps(request: Request) -> ApiDeps:
         return request.app.state.deps
@@ -128,6 +151,7 @@ def create_app(deps: ApiDeps | None = None, lifespan: Any = None) -> FastAPI:
         try:
             await deps.publisher.publish(request_id)
         except Exception as exc:  # the row is committed; the sweeper re-publishes it after stale_after_s
+            PUBLISH_FAILURES.inc()
             log.warning("intake.publish_failed", request_id=str(request_id), error=repr(exc))
 
     @app.get("/v1/requests/{request_id}")
@@ -150,7 +174,18 @@ def create_app(deps: ApiDeps | None = None, lifespan: Any = None) -> FastAPI:
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
-        """Liveness: the process answers."""
+        """Liveness: the process answers. A failure here means restart the process."""
         return {"status": "ok"}
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics() -> Response:
+        """Prometheus scrape endpoint."""
+        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+    @app.get("/readyz")
+    async def readyz(deps: Deps) -> JSONResponse:
+        """Readiness: dependencies reachable. A failure here means take the replica out of the load balancer."""
+        checks = await deps.readiness() if deps.readiness else {}
+        return JSONResponse(checks, status_code=200 if all(checks.values()) else 503)
 
     return app

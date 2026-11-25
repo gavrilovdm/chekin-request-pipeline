@@ -5,6 +5,7 @@ from datetime import timedelta
 
 import structlog
 
+from pipeline.observability import REPUBLISH_FAILURES, REPUBLISHED
 from pipeline.ports import Publisher, SweepStore
 
 log = structlog.get_logger(__name__)
@@ -33,7 +34,10 @@ class Sweeper:
         for rid, exc in failed:
             log.warning("sweeper.publish_failed", request_id=str(rid), error=repr(exc))
         reasons: dict[str, int] = {}
-        for _, status in due:
+        for (_, status), outcome in zip(due, results, strict=True):
+            if not isinstance(outcome, BaseException):
+                REPUBLISHED.labels(status).inc()
             reasons[status] = reasons.get(status, 0) + 1
+        REPUBLISH_FAILURES.inc(len(failed))
         log.info("sweeper.republished", total=len(due), failed=len(failed), by_status=reasons)
         return len(due) - len(failed)
