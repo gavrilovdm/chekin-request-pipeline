@@ -9,7 +9,6 @@ from pipeline.adapters.postgres import PgDispatchStore, PgIntakeStore
 from tests.integration.conftest import set_row
 
 STALE = timedelta(seconds=60)
-NOW = datetime.now  # evaluated per call
 
 
 @pytest.fixture
@@ -69,18 +68,19 @@ async def test_webhook_claim_hides_rows_and_records_outcomes(store, pool, dispat
     rid = await new_row(store, pool, status="done", attempt=1, result={"ref": "R"}, webhook_pending=True,
                         webhook_next_at=ago(1))
 
-    jobs = [j for j in await dispatch.claim_due(10_000, timedelta(seconds=60)) if j.request_id == rid]
-    again = [j for j in await dispatch.claim_due(10_000, timedelta(seconds=60)) if j.request_id == rid]
+    jobs = [j for j in await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000) if j.request_id == rid]
+    again = [j for j in await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000) if j.request_id == rid]
 
     assert len(jobs) == 1 and again == []
     job = jobs[0]
     assert job.url.endswith("/webhooks/tenant-a") and job.secret == "demo-secret-a" and job.result == {"ref": "R"}
 
-    await dispatch.mark_failed_attempt(rid, datetime.now(UTC) + timedelta(seconds=5))
+    await dispatch.mark_failed_attempt(rid, 0, datetime.now(UTC) + timedelta(seconds=5))
+    await dispatch.mark_failed_attempt(rid, 0, datetime.now(UTC))  # a second sender with the same job: fenced
     row = await pool.fetchrow("SELECT * FROM requests WHERE id = $1", rid)
     assert row["webhook_pending"] and row["webhook_attempt"] == 1 and row["webhook_status"] is None
 
-    await dispatch.mark_failed_attempt(rid, None)
+    await dispatch.mark_failed_attempt(rid, 1, None)
     row = await pool.fetchrow("SELECT * FROM requests WHERE id = $1", rid)
     assert not row["webhook_pending"] and row["webhook_status"] == "failed" and row["webhook_attempt"] == 2
 
@@ -88,7 +88,18 @@ async def test_webhook_claim_hides_rows_and_records_outcomes(store, pool, dispat
 async def test_delivered_clears_the_outbox_flag(store, pool, dispatch):
     rid = await new_row(store, pool, status="done", attempt=1, webhook_pending=True, webhook_next_at=ago(1))
 
-    await dispatch.mark_delivered(rid)
+    await dispatch.mark_delivered(rid, 0)
 
     row = await pool.fetchrow("SELECT * FROM requests WHERE id = $1", rid)
     assert not row["webhook_pending"] and row["webhook_status"] == "delivered"
+
+
+async def test_webhook_claim_caps_jobs_per_tenant(store, pool, dispatch):
+    """A tenant with many due webhooks cannot fill the whole batch (head-of-line blocking)."""
+    await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000)  # flush earlier rows
+    ids = [await new_row(store, pool, status="done", attempt=1, webhook_pending=True, webhook_next_at=ago(1))
+           for _ in range(6)]
+
+    jobs = [j for j in await dispatch.claim_due(100, timedelta(seconds=60), 2) if j.request_id in ids]
+
+    assert len(jobs) == 2

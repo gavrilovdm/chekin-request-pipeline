@@ -119,16 +119,16 @@ class WebhookJob:
 class WebhookStore(Protocol):
     """The outbox side of the requests table."""
 
-    async def claim_due(self, limit: int, visibility: timedelta) -> list[WebhookJob]:
-        """Take due jobs and hide them for ``visibility`` so concurrent senders do not double-send."""
+    async def claim_due(self, limit: int, visibility: timedelta, per_tenant: int) -> list[WebhookJob]:
+        """Take due jobs (at most ``per_tenant`` per tenant) and hide them for ``visibility``."""
         ...
 
-    async def mark_delivered(self, request_id: UUID) -> None:
-        """The tenant acknowledged the webhook."""
+    async def mark_delivered(self, request_id: UUID, webhook_attempt: int) -> None:
+        """The tenant acknowledged the webhook. ``webhook_attempt`` is the job's count, used as a fencing token."""
         ...
 
-    async def mark_failed_attempt(self, request_id: UUID, next_at: datetime | None) -> None:
-        """Delivery failed: retry at ``next_at``, or give up when it is ``None``."""
+    async def mark_failed_attempt(self, request_id: UUID, webhook_attempt: int, next_at: datetime | None) -> None:
+        """Delivery failed: retry at ``next_at``, or give up when it is ``None``. Fenced like ``mark_delivered``."""
         ...
 
 

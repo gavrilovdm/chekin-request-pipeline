@@ -148,12 +148,20 @@ class PgDispatchStore:
         RETURNING r.id, r.status
     """
 
+    # At most $3 jobs per tenant per claim: a tenant whose endpoint hangs can hold one round of its own
+    # deliveries (<= the HTTP timeout), never the whole batch. Candidates are over-fetched so other tenants
+    # still fill the batch.
     _CLAIM_WEBHOOKS = """
-        WITH due AS (
-            SELECT id FROM requests
+        WITH candidates AS (
+            SELECT id, tenant_id FROM requests
              WHERE webhook_pending AND webhook_next_at <= now()
-             LIMIT $1
+             ORDER BY webhook_next_at
+             LIMIT $1 * 4
                FOR UPDATE SKIP LOCKED
+        ), ranked AS (
+            SELECT id, row_number() OVER (PARTITION BY tenant_id ORDER BY id) AS n FROM candidates
+        ), due AS (
+            SELECT id FROM ranked WHERE n <= $3 LIMIT $1
         )
         UPDATE requests r SET webhook_next_at = now() + $2::interval
           FROM due, tenants t
@@ -165,15 +173,15 @@ class PgDispatchStore:
     _DELIVERED = """
         UPDATE requests SET webhook_pending = false, webhook_status = 'delivered',
                             webhook_attempt = webhook_attempt + 1, webhook_next_at = NULL
-         WHERE id = $1 AND webhook_pending
+         WHERE id = $1 AND webhook_pending AND webhook_attempt = $2
     """
 
     _FAILED = """
         UPDATE requests SET webhook_attempt = webhook_attempt + 1,
-                            webhook_next_at = $2::timestamptz,
-                            webhook_pending = ($2::timestamptz IS NOT NULL),
-                            webhook_status = CASE WHEN $2::timestamptz IS NULL THEN 'failed' END
-         WHERE id = $1 AND webhook_pending
+                            webhook_next_at = $3::timestamptz,
+                            webhook_pending = ($3::timestamptz IS NOT NULL),
+                            webhook_status = CASE WHEN $3::timestamptz IS NULL THEN 'failed' END
+         WHERE id = $1 AND webhook_pending AND webhook_attempt = $2
     """
 
     def __init__(self, pool: asyncpg.Pool) -> None:
@@ -184,19 +192,19 @@ class PgDispatchStore:
         rows = await self._pool.fetch(self._TAKE_DUE, stale_after, limit)
         return [(row["id"], row["status"]) for row in rows]
 
-    async def claim_due(self, limit: int, visibility: timedelta) -> list[WebhookJob]:
-        """Webhooks due now, hidden from other senders for ``visibility``."""
-        rows = await self._pool.fetch(self._CLAIM_WEBHOOKS, limit, visibility)
+    async def claim_due(self, limit: int, visibility: timedelta, per_tenant: int) -> list[WebhookJob]:
+        """Webhooks due now (at most ``per_tenant`` each), hidden from other senders for ``visibility``."""
+        rows = await self._pool.fetch(self._CLAIM_WEBHOOKS, limit, visibility, per_tenant)
         return [
             WebhookJob(r["id"], r["tenant_id"], r["webhook_url"], r["webhook_secret"], r["status"], r["result"],
                        r["last_error"], r["attempt"], r["webhook_attempt"])
             for r in rows
         ]
 
-    async def mark_delivered(self, request_id: UUID) -> None:
-        """Delivered: clear the outbox flag."""
-        await self._pool.execute(self._DELIVERED, request_id)
+    async def mark_delivered(self, request_id: UUID, webhook_attempt: int) -> None:
+        """Delivered: clear the outbox flag (only if no other sender recorded this attempt first)."""
+        await self._pool.execute(self._DELIVERED, request_id, webhook_attempt)
 
-    async def mark_failed_attempt(self, request_id: UUID, next_at: datetime | None) -> None:
-        """Failed: schedule the next try, or give up when ``next_at`` is None."""
-        await self._pool.execute(self._FAILED, request_id, next_at)
+    async def mark_failed_attempt(self, request_id: UUID, webhook_attempt: int, next_at: datetime | None) -> None:
+        """Failed: schedule the next try, or give up when ``next_at`` is None. Fenced like ``mark_delivered``."""
+        await self._pool.execute(self._FAILED, request_id, webhook_attempt, next_at)

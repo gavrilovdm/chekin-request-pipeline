@@ -66,14 +66,14 @@ class FakeWebhookStore:
         self.delivered = []
         self.failed = []  # (id, next_at)
 
-    async def claim_due(self, limit, visibility):
+    async def claim_due(self, limit, visibility, per_tenant):
         jobs, self.jobs = self.jobs[:limit], self.jobs[limit:]
         return jobs
 
-    async def mark_delivered(self, request_id):
+    async def mark_delivered(self, request_id, webhook_attempt):
         self.delivered.append(request_id)
 
-    async def mark_failed_attempt(self, request_id, next_at):
+    async def mark_failed_attempt(self, request_id, webhook_attempt, next_at):
         self.failed.append((request_id, next_at))
 
 
@@ -128,6 +128,22 @@ async def test_unreachable_endpoint_counts_as_failure():
     await sender(store, handler).send_due_once()
 
     assert len(store.failed) == 1 and store.failed[0][1] is not None
+
+
+async def test_malformed_url_is_a_counted_failure_not_a_crash():
+    store = FakeWebhookStore([WebhookJob(uuid4(), "t", "http://[::1", "s", "done", {}, None, 1, 0)])
+
+    await sender(store, lambda r: httpx.Response(200)).send_due_once()
+
+    assert len(store.failed) == 1
+
+
+def test_visibility_must_exceed_timeout():
+    import pytest
+
+    with pytest.raises(ValueError):
+        WebhookSender(FakeWebhookStore([]), httpx.AsyncClient(), RetryPolicy(), per_tenant=1, batch=1,
+                      visibility=timedelta(seconds=5), timeout=5.0)
 
 
 async def test_last_attempt_gives_up():

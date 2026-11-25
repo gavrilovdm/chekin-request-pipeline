@@ -10,7 +10,7 @@ Roadmap: [T6](../sdlc/roadmap.md) · Spec: [no loss, webhooks](../sdlc/spec.md#n
 - `src/pipeline/dispatcher/webhooks.py`: `WebhookSender.send_due_once()`. It signs with HMAC-SHA256, applies a per-tenant concurrency cap and a timeout, and retries with backoff up to a maximum.
 - `src/pipeline/main.py`: `run_dispatcher`. `__main__.py`: `python -m pipeline dispatcher`. `docker-compose.yml`: a `dispatcher` service.
 - Tests:
-  - `tests/unit/test_sweeper.py` and `tests/unit/test_webhooks.py` (fakes);
+  - `tests/unit/test_dispatcher.py` (sweeper and webhook sender on fakes);
   - `tests/integration/test_dispatch_sql.py`;
   - `tests/integration/test_e2e.py`, extended with a lost publish and a signed webhook.
 
@@ -53,6 +53,16 @@ The sender claims due rows (`SKIP LOCKED`). It also pushes `webhook_next_at` for
 | anything else | backoff with the domain `RetryPolicy`; after `webhook_max_attempts`, `webhook_status = failed` |
 
 Delivery is at least once. The tenant deduplicates by `X-Request-Id`.
+
+## Review fixes and additions
+
+- **Head-of-line blocking.** One claim takes at most `webhook_per_tenant_concurrency` jobs per tenant (a window function over the `SKIP LOCKED` candidates). A batch therefore finishes within about one HTTP timeout, and a hanging tenant cannot stall the others.
+- **Visibility window.** It must exceed the webhook timeout, and the constructor enforces this, so an in-flight job is never re-claimed by another replica.
+- **Fencing.** `mark_delivered` and `mark_failed_attempt` apply only if `webhook_attempt` still equals the claimed value, so a slow duplicate sender cannot double-count an attempt.
+- **Any exception** during delivery (for example `httpx.InvalidURL` from a malformed tenant URL) counts as a failed attempt. The attempts stay bounded and end in `failed`.
+- **Additions** not in the first plan:
+  - an `X-Tenant` header on webhooks;
+  - in `main._every`, a full batch loops again without sleeping, so a backlog drains at full speed.
 
 ## Risks
 

@@ -22,7 +22,12 @@ def sign(secret: str, body: bytes) -> str:
 
 
 class WebhookSender:
-    """Sends due webhooks. One slow tenant endpoint can hold at most ``per_tenant`` deliveries at a time."""
+    """Sends due webhooks.
+
+    One slow tenant endpoint can hold at most ``per_tenant`` deliveries at a time, and the store hands out at most
+    ``per_tenant`` jobs per tenant per claim, so one batch finishes within about one HTTP timeout. The visibility
+    window must exceed that timeout, so no other sender re-claims a job that is still in flight.
+    """
 
     def __init__(
         self,
@@ -44,11 +49,13 @@ class WebhookSender:
         self._visibility = visibility
         self._timeout = timeout
         self._clock = clock
+        if visibility.total_seconds() <= timeout:
+            raise ValueError("visibility must exceed the webhook timeout, or in-flight jobs get re-claimed")
         self._limits: dict[str, asyncio.Semaphore] = {}
 
     async def send_due_once(self) -> int:
         """Claim and deliver one batch; returns how many jobs were attempted."""
-        jobs = await self._store.claim_due(self._batch, self._visibility)
+        jobs = await self._store.claim_due(self._batch, self._visibility, self._per_tenant)
         await asyncio.gather(*(self._deliver(job) for job in jobs))
         return len(jobs)
 
@@ -72,16 +79,17 @@ class WebhookSender:
                 response = await self._client.post(job.url, content=body, headers=headers, timeout=self._timeout)
                 delivered = 200 <= response.status_code < 300
                 detail = str(response.status_code)
-            except httpx.HTTPError as exc:
+            except Exception as exc:  # any failure (incl. httpx.InvalidURL) is a failed attempt, counted and bounded
                 delivered, detail = False, type(exc).__name__
 
         if delivered:
-            await self._store.mark_delivered(job.request_id)
+            await self._store.mark_delivered(job.request_id, job.webhook_attempt)
             return
         attempt = job.webhook_attempt + 1
         if attempt >= self._policy.max_attempts:
             log.error("webhook.gave_up", request_id=str(job.request_id), tenant=job.tenant_id, detail=detail)
-            await self._store.mark_failed_attempt(job.request_id, None)
+            await self._store.mark_failed_attempt(job.request_id, job.webhook_attempt, None)
         else:
             log.warning("webhook.retry", request_id=str(job.request_id), tenant=job.tenant_id, detail=detail)
-            await self._store.mark_failed_attempt(job.request_id, self._clock() + self._policy.delay(attempt))
+            next_at = self._clock() + self._policy.delay(attempt)
+            await self._store.mark_failed_attempt(job.request_id, job.webhook_attempt, next_at)
