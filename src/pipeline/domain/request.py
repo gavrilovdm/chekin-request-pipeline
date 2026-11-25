@@ -96,6 +96,11 @@ class Transition:
     error: str | None = None
     next_attempt_at: datetime | None = None
 
+    def __post_init__(self) -> None:
+        # An attempt always ends somewhere else: writing 'processing' with no lease would strand the request.
+        if self.status in (Status.PROCESSING, Status.RECEIVED):
+            raise IllegalTransition(f"an attempt cannot end in {self.status}")
+
     @property
     def notify(self) -> bool:
         """Whether the tenant should be told (a webhook): only final states are reported."""

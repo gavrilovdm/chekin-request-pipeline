@@ -17,6 +17,6 @@ trap 'git -C "$root" worktree remove --force "$wt"' EXIT
   claude -p --agent verifier \
     --allowedTools Read Grep Glob "Bash(make check)" "Bash(make test-integration)" "Bash(git diff:*)" \
       "Bash(git log:*)" "Bash(uv run pytest:*)" \
-    -- "Verify the task whose plan is $plan. The base branch is master." > "$out"
+    -- "Verify the task whose plan is $plan. The base branch is master. The docker compose stack is already running (do not run make up or docker); run make test-integration directly when the plan asks for it." > "$out"
 )
 echo "$out"
