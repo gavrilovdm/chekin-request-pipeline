@@ -1,5 +1,6 @@
 """RabbitMQ topology and publisher. Messages carry only a request id; Postgres holds the state."""
 
+import asyncio
 from uuid import UUID
 
 import aio_pika
@@ -58,6 +59,6 @@ class RabbitPublisher:
     async def queue_depth(self) -> int:
         """Messages ready in the work queue (not counting unacked ones in flight)."""
         # A raw passive declare: aio-pika's robust channel caches the declaration result, so its count goes stale.
-        channel = await self._channel.get_underlay_channel()
-        result = await channel.queue_declare(QUEUE, passive=True)
+        channel = await asyncio.wait_for(self._channel.get_underlay_channel(), timeout=self._timeout)
+        result = await channel.queue_declare(QUEUE, passive=True, timeout=self._timeout)
         return result.message_count or 0
