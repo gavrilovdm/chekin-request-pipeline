@@ -5,7 +5,7 @@ check: lint test
 
 lint:
 	uv run ruff check .
-	uvx ruff check --isolated --select D100,D101,D102,D103 --extend-exclude tests,migrations,versions,scripts,.claude .
+	uv run ruff check --isolated --select D100,D101,D102,D103 --extend-exclude tests,migrations,versions,scripts,.claude .
 
 test:
 	uv run pytest tests/unit -q
