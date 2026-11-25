@@ -33,6 +33,11 @@ class HttpProcessor:
 
         if response.status_code == 429 or response.status_code >= 500:
             raise RetryableError(f"downstream {response.status_code}: {response.text[:200]}")
-        if response.status_code >= 400:
+        if response.status_code >= 300:
             raise PermanentError(f"downstream {response.status_code}: {response.text[:200]}")
-        return response.json()
+        if not response.content:
+            return {}
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise PermanentError(f"downstream {response.status_code} with a non-JSON body") from exc

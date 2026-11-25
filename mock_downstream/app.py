@@ -31,15 +31,21 @@ config = Config()
 results: dict[str, dict[str, Any]] = {}
 stats = {"calls": 0, "successes": 0, "duplicate_calls_after_success": 0, "errors": 0}
 webhooks: list[dict[str, Any]] = []
+locks: dict[str, asyncio.Lock] = {}
 
 
 @app.post("/process", response_model=None)
 async def process(body: dict[str, Any], idempotency_key: str = Header(...)) -> Response | dict[str, Any]:
     """Pretend to do the work; the same Idempotency-Key always gets the same result."""
     stats["calls"] += 1
-    if idempotency_key in results:
-        stats["duplicate_calls_after_success"] += 1
-        return results[idempotency_key]
+    async with locks.setdefault(idempotency_key, asyncio.Lock()):  # concurrent calls with one key: one effect
+        if idempotency_key in results:
+            stats["duplicate_calls_after_success"] += 1
+            return results[idempotency_key]
+        return await _attempt(body, idempotency_key)
+
+
+async def _attempt(body: dict[str, Any], idempotency_key: str) -> Response | dict[str, Any]:
     await asyncio.sleep(max(0.0, random.gauss(config.latency_ms, config.jitter_ms / 2)) / 1000)
     roll = random.random()
     if config.down or roll < config.error_rate:
@@ -93,6 +99,7 @@ async def reset() -> dict[str, str]:
     config = Config()
     results.clear()
     webhooks.clear()
+    locks.clear()
     for key in stats:
         stats[key] = 0
     return {"status": "reset"}

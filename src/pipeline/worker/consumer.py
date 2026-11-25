@@ -65,4 +65,7 @@ class Consumer:
             raise
         except Exception:
             log.exception("consumer.handler_failed", request_id=str(request_id))
-        await message.ack()
+        try:
+            await message.ack()
+        except Exception:  # e.g. the channel was re-opened after a broker restart; a redelivery is harmless
+            log.exception("consumer.ack_failed", request_id=str(request_id))

@@ -44,3 +44,13 @@ async def test_transport_failures_are_retryable(exc):
 
     with pytest.raises(RetryableError):
         await processor(handler).process(REQUEST)
+
+
+async def test_empty_success_body_is_an_empty_result():
+    assert await processor(lambda r: httpx.Response(204)).process(REQUEST) == {}
+
+
+@pytest.mark.parametrize("response", [httpx.Response(302, text="moved"), httpx.Response(200, text="<html>")])
+async def test_redirects_and_non_json_bodies_are_permanent(response):
+    with pytest.raises(PermanentError):
+        await processor(lambda r: response).process(REQUEST)

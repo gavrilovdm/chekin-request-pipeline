@@ -6,11 +6,14 @@ from pipeline.worker.handler import HandleResult
 
 
 class FakeMessage:
-    def __init__(self, body: bytes):
+    def __init__(self, body: bytes, ack_error=None):
         self.body = body
         self.acked = self.rejected = False
+        self.ack_error = ack_error
 
     async def ack(self):
+        if self.ack_error:
+            raise self.ack_error
         self.acked = True
 
     async def reject(self, requeue: bool = False):
@@ -114,3 +117,14 @@ async def test_work_past_the_grace_period_is_cancelled_and_left_unacked():
     await task
 
     assert not message.acked  # RabbitMQ re-queues it when the channel closes
+
+
+async def test_ack_failure_is_logged_not_raised():
+    queue, stop, task = await start(FakeHandler())
+    message = FakeMessage(str(uuid4()).encode(), ack_error=RuntimeError("channel closed"))
+
+    await deliver(queue, message)
+    stop.set()
+    await task  # no "Task exception was never retrieved"; the consumer keeps running
+
+    assert not message.acked

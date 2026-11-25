@@ -46,14 +46,18 @@ A redelivered message may be skipped while the old lease is still alive. Once th
 | Downstream response | Error |
 |---|---|
 | timeout, connection error, `429`, `5xx` | `RetryableError` |
-| other `4xx` | `PermanentError` |
-| `2xx` | success; the JSON body is the result |
+| `3xx`, other `4xx`, a `2xx` with a non-JSON body | `PermanentError` |
+| `2xx` | success; the JSON body is the result, an empty body is `{}` |
 
 `Idempotency-Key` is set to the request id, so a repeat after a crash between "downstream succeeded" and "complete" is deduplicated on the downstream side.
 
 ## Risks
 
-- A redelivery while the lease is alive is skipped. Until T6 lands, a cancelled attempt recovers only by redelivery after the lease expires. T6 closes this gap.
+- **Until T6 (sweeper) lands, two paths leave a request stuck with no message.**
+  - Shutdown cancels an attempt. RabbitMQ redelivers at once, while the lease is still alive, so the redelivery is skipped and acked. The row stays `processing`.
+  - The handler raises (for example the DB is down) and the delivery is acked. The row stays `received` or `retry_scheduled`.
+
+  Both are by design: the message is only a hint. The T6 sweeper is what recovers them.
 
 ## Proof
 
