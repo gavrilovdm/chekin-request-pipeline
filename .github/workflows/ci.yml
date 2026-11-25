@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # setup-uv publishes no floating major tag since v8, so this is an exact version.
+      - uses: astral-sh/setup-uv@v10.1.0
+
+      - name: Lint
+        run: uvx ruff check .
+
+      # The same rule as the docs-check hook; keep the excludes in step with .claude/kit.json.
+      - name: Documentation
+        run: uvx ruff check --isolated --select D100,D101,D102,D103 --extend-exclude tests,migrations,versions,scripts,.claude .
+
+      - name: Unit tests
+        run: uv run pytest tests/unit -q
