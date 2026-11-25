@@ -8,6 +8,7 @@ Roadmap: [T8](../sdlc/roadmap.md) · Target: the "Failure modes" table on the [a
   services and the mock's `/admin/config` to inject faults.
 - `mock_downstream/app.py`: `fail_first` config. Each `Idempotency-Key` fails with 503 for its first N calls, then succeeds.
   This makes the flaky-downstream scenario deterministic: 50% random errors with `max_attempts=5` would flake about 3% of runs.
+  The mock also gains per-key call counting and `GET /admin/calls/{key}`, so tests can assert exactly how many calls and effects one request caused.
 - `docker-compose.yml`: demo timings for the dispatcher and workers.
   - `stale_after_s=15` and `lease_s=15`, so recovery happens within a test's patience.
   - Each override carries a comment. The code defaults (60 s and 30 s) stay as the production values.

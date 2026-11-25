@@ -11,11 +11,13 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from pipeline.config import Settings
+from tests.integration.conftest import MOCK_URL
 from tests.integration.helpers import A, submit, wait_for
 
 pytestmark = pytest.mark.chaos
 
-MAX_ATTEMPTS = 5  # Settings.max_attempts default
+MAX_ATTEMPTS = Settings().max_attempts  # PIPELINE_MAX_ATTEMPTS, same source as the services
 
 
 def compose(*args: str) -> None:
@@ -50,7 +52,10 @@ async def test_worker_killed_mid_processing_still_finishes(api, mock, pool):
     view = await wait_for(api, rid, limit_s=60)  # lease (15 s) expires, the sweeper re-publishes
 
     assert view["status"] == "done" and view["attempt"] == 2
-    assert (await calls_for(mock, rid))["succeeded"]
+    # The killed attempt's call still completes inside the mock; attempt 2 reuses the same Idempotency-Key,
+    # so the downstream applied exactly one effect for two calls.
+    assert (await calls_for(mock, rid)) == {"calls": 2, "succeeded": True}
+    assert (await mock.get("/admin/stats")).json()["successes"] == 1
 
 
 async def test_flaky_downstream_is_absorbed_by_retries(api, mock):
@@ -109,8 +114,11 @@ async def test_client_replay_creates_one_request_and_one_effect(api, mock, pool)
 
 @pytest.fixture(autouse=True)
 async def _stack_is_whole():
-    """If a scenario failed half-way, bring every service back before the next one."""
+    """If a scenario failed half-way, bring every service back before the next one.
+
+    Note: `up` restores the compose file's scale (1 worker); re-run `make scale` after chaos tests if needed.
+    """
     yield
     compose("up", "-d", "--wait")
     async with httpx.AsyncClient() as client:
-        await client.post("http://localhost:8081/admin/reset")
+        await client.post(f"{MOCK_URL}/admin/reset")
