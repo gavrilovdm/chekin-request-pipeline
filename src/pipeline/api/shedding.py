@@ -37,8 +37,8 @@ class LoadShedder:
     async def refresh(self) -> None:
         """Read the depth once; on failure forget it (fail open)."""
         try:
-            self.depth = await self._read_depth()
-        except Exception as exc:
+            self.depth = await asyncio.wait_for(self._read_depth(), timeout=self._interval * 2)
+        except Exception as exc:  # includes TimeoutError: a stalled broker must not freeze a stale depth
             self.depth = None
             log.warning("shedder.depth_unknown", error=str(exc))
 

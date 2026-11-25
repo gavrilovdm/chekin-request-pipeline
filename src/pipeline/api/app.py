@@ -8,8 +8,7 @@ from uuid import UUID
 
 import structlog
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from pipeline.api.auth import TenantCache
 from pipeline.api.rate_limit import TenantRateLimiter
@@ -37,7 +36,6 @@ class ApiDeps:
     tenants: TenantCache
     limiter: TenantRateLimiter
     shedder: Shedder
-    publish_timeout: float
 
 
 class RequestIn(BaseModel):
@@ -45,6 +43,21 @@ class RequestIn(BaseModel):
 
     type: str = Field(min_length=1, max_length=64)
     data: dict[str, Any]
+
+
+async def _read_capped(request: Request) -> bytes:
+    """Read the body, refusing early (by Content-Length) or mid-stream once it passes ``MAX_BODY_BYTES``."""
+    too_large = HTTPException(413, f"Body larger than {MAX_BODY_BYTES} bytes")
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+        raise too_large
+    chunks, size = [], 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_BODY_BYTES:
+            raise too_large
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def payload_hash(payload: dict[str, Any]) -> str:
@@ -95,10 +108,11 @@ def create_app(deps: ApiDeps | None = None, lifespan: Any = None) -> FastAPI:
         retry_after = deps.shedder.retry_after()
         if retry_after is not None:
             raise HTTPException(503, "Overloaded, retry later", {"Retry-After": str(retry_after)})
-        raw = await request.body()
-        if len(raw) > MAX_BODY_BYTES:
-            raise HTTPException(413, f"Body larger than {MAX_BODY_BYTES} bytes")
-        body = RequestIn.model_validate_json(raw).model_dump()
+        raw = await _read_capped(request)
+        try:
+            body = RequestIn.model_validate_json(raw).model_dump()
+        except ValidationError as exc:
+            raise HTTPException(422, exc.errors(include_url=False, include_context=False)) from exc
 
         digest = payload_hash(body)
         created = await deps.store.create(caller.id, idempotency_key, body, digest)
@@ -138,9 +152,5 @@ def create_app(deps: ApiDeps | None = None, lifespan: Any = None) -> FastAPI:
     async def healthz() -> dict[str, str]:
         """Liveness: the process answers."""
         return {"status": "ok"}
-
-    @app.exception_handler(ValueError)
-    async def invalid_body(_request: Request, exc: ValueError) -> JSONResponse:
-        return JSONResponse({"detail": str(exc)}, status_code=422)
 
     return app

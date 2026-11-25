@@ -68,7 +68,6 @@ def make_client(*, publisher=None, shedder=None, store=None):
         tenants=TenantCache(store, ttl=60),
         limiter=TenantRateLimiter(),
         shedder=shedder or FixedShedder(),
-        publish_timeout=1.0,
     )
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(deps)), base_url="http://test")
 
@@ -173,6 +172,14 @@ async def test_get_is_tenant_scoped():
 async def test_oversized_body_is_rejected():
     async with make_client() as client:
         response = await post(client, body={"type": "t", "data": {"blob": "x" * 70_000}})
+
+    assert response.status_code == 413
+
+
+async def test_oversized_declared_length_is_rejected_before_reading():
+    async with make_client() as client:
+        response = await client.post("/v1/requests", content=b"{}", headers={
+            "Authorization": "Bearer key-a", "Idempotency-Key": "k", "Content-Length": str(10**9)})
 
     assert response.status_code == 413
 

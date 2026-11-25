@@ -13,7 +13,8 @@ Roadmap: [T4](../sdlc/roadmap.md) · Spec: [functional requirements](../sdlc/spe
   - `/healthz`
 - `src/pipeline/main.py`: composition root (`api_app` factory). It builds the pool, the Rabbit channel, the publisher and the shedder in the lifespan.
 - `Dockerfile` (one image for all services) and an `api` service in `docker-compose.yml` on port 8080.
-- `tests/unit/test_rate_limit.py`, `tests/unit/test_api.py` (fakes), `tests/integration/test_api.py` (real stack).
+- `src/pipeline/adapters/rabbitmq.py`: timeouts on the queue-depth read (review fix).
+- `tests/unit/test_auth_shedding.py` (bounded cache, fail-open shedding), `tests/unit/test_rate_limit.py`, `tests/unit/test_api.py` (fakes), `tests/integration/test_api.py` (real stack).
 
 ## Order of work
 
@@ -45,6 +46,13 @@ Roadmap: [T4](../sdlc/roadmap.md) · Spec: [functional requirements](../sdlc/spe
 - The rate limit is per api replica (in memory). This is approximate under N replicas. See the spec's areas of concern.
 
 **Layering.** Handlers stay thin. Rules live in `rate_limit.py`, `auth.py` and `shedding.py`. Storage is reached only through the `IntakeStore` and `Publisher` ports.
+
+## Review fixes
+
+- **Body size.** The body is capped while it streams in. A declared `Content-Length` above the cap is refused before anything is read.
+- **Tenant cache.** It is a bounded LRU with a TTL (10k entries). Distinct guessed keys still cost one indexed lookup each, and per-IP throttling of failed auth belongs to the API gateway or WAF.
+- **Depth read.** It is bounded by a timeout, so a stalled broker fails open instead of freezing a stale "overloaded" depth.
+- **Validation errors.** Only pydantic `ValidationError` maps to `422`. Any other `ValueError` is a server error.
 
 ## Risks
 

@@ -40,7 +40,6 @@ def api_app() -> FastAPI:
             tenants=TenantCache(store, settings.tenant_cache_ttl_s),
             limiter=TenantRateLimiter(),
             shedder=shedder,
-            publish_timeout=settings.publish_timeout_s,
         )
         shedding = asyncio.create_task(shedder.run())
         try:
