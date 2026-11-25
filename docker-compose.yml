@@ -5,6 +5,9 @@ x-app: &app
   image: chekin-pipeline:dev
   restart: unless-stopped
   environment: &app-env
+    # Demo timings so failure recovery is visible in seconds; code defaults (60 s / 30 s) are the production values.
+    PIPELINE_STALE_AFTER_S: "15"
+    PIPELINE_LEASE_S: "15"
     PIPELINE_DATABASE_URL: postgresql://pipeline:pipeline@postgres:5432/pipeline
     PIPELINE_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
     PIPELINE_DOWNSTREAM_URL: http://downstream-mock:8081
