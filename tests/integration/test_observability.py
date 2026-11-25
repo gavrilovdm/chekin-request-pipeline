@@ -41,8 +41,8 @@ async def test_dispatcher_gauges_reflect_the_database(pool):
         async with httpx.AsyncClient(timeout=10) as client:
             for _ in range(60):  # gauges refresh every 10 s
                 text = (await client.get(DISPATCHER_METRICS)).text
-                oldest, needs_human = gauge(text, "pipeline_oldest_unfinished_seconds"), gauge(text, "pipeline_needs_human")
-                if oldest >= 3500 and needs_human >= 1:
+                oldest = gauge(text, "pipeline_oldest_unfinished_seconds")
+                if oldest >= 3500 and gauge(text, "pipeline_needs_human") >= 1:
                     break
                 await asyncio.sleep(0.5)
         assert gauge(text, "pipeline_oldest_unfinished_seconds") >= 3500
