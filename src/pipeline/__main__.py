@@ -4,9 +4,9 @@ import asyncio
 import sys
 
 from pipeline.config import Settings
-from pipeline.main import run_worker
+from pipeline.main import run_dispatcher, run_worker
 
-COMMANDS = {"worker": run_worker}
+COMMANDS = {"worker": run_worker, "dispatcher": run_dispatcher}
 
 
 def main() -> None:

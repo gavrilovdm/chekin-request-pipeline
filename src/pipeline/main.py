@@ -3,27 +3,31 @@
 Entry points:
     uvicorn pipeline.main:api_app --factory   # intake API
     python -m pipeline worker                 # worker
+    python -m pipeline dispatcher             # sweeper + webhooks
 """
 
 import asyncio
 import contextlib
 import signal
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import timedelta
 
 import aio_pika
 import httpx
+import structlog
 from fastapi import FastAPI
 
 from pipeline.adapters.downstream import HttpProcessor
-from pipeline.adapters.postgres import PgIntakeStore, PgRequestRepository, create_pool
+from pipeline.adapters.postgres import PgDispatchStore, PgIntakeStore, PgRequestRepository, create_pool
 from pipeline.adapters.rabbitmq import RabbitPublisher, declare_topology, open_channel
 from pipeline.api.app import ApiDeps, create_app
 from pipeline.api.auth import TenantCache
 from pipeline.api.rate_limit import TenantRateLimiter
 from pipeline.api.shedding import LoadShedder
 from pipeline.config import Settings
+from pipeline.dispatcher.sweeper import Sweeper
+from pipeline.dispatcher.webhooks import WebhookSender
 from pipeline.domain.retry_policy import RetryPolicy
 from pipeline.worker.consumer import Consumer
 from pipeline.worker.handler import RequestHandler
@@ -81,13 +85,68 @@ async def run_worker(settings: Settings) -> None:
         lease=timedelta(seconds=settings.lease_s),
         timeout=settings.processing_timeout_s,
     )
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, stop.set)
+    stop = _stop_on_signals()
     try:
         await Consumer(queue, handler, grace=settings.shutdown_grace_s).run(stop)
     finally:
         await connection.close()
         await client.aclose()
         await pool.close()
+
+
+async def run_dispatcher(settings: Settings) -> None:
+    """Dispatcher process: sweeper and webhook sender loops until SIGTERM."""
+    pool = await create_pool(settings.database_url, settings.db_pool_size, settings.db_command_timeout_s)
+    connection = await aio_pika.connect_robust(settings.amqp_url)
+    channel = await open_channel(connection)
+    await declare_topology(channel)
+    store = PgDispatchStore(pool)
+    sweeper = Sweeper(
+        store,
+        RabbitPublisher(channel, settings.publish_timeout_s),
+        stale_after=timedelta(seconds=settings.stale_after_s),
+        batch=settings.sweep_batch,
+    )
+    client = httpx.AsyncClient(limits=httpx.Limits(max_connections=200))
+    sender = WebhookSender(
+        store,
+        client,
+        RetryPolicy(settings.webhook_max_attempts, settings.retry_base_s, settings.retry_max_s),
+        per_tenant=settings.webhook_per_tenant_concurrency,
+        batch=settings.sweep_batch,
+        visibility=timedelta(seconds=settings.webhook_timeout_s * 4),
+        timeout=settings.webhook_timeout_s,
+    )
+    stop = _stop_on_signals()
+    try:
+        await asyncio.gather(
+            _every(settings.sweep_interval_s, sweeper.sweep_once, settings.sweep_batch, stop, "sweeper"),
+            _every(settings.sweep_interval_s / 2, sender.send_due_once, settings.sweep_batch, stop, "webhooks"),
+        )
+    finally:
+        await connection.close()
+        await client.aclose()
+        await pool.close()
+
+
+def _stop_on_signals() -> asyncio.Event:
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+    return stop
+
+
+async def _every(
+    interval: float, step: Callable[[], Awaitable[int]], batch: int, stop: asyncio.Event, name: str
+) -> None:
+    """Run ``step`` until ``stop``; a full batch means more is waiting, so go again without sleeping."""
+    log = structlog.get_logger(name)
+    while not stop.is_set():
+        try:
+            if await step() >= batch:
+                continue
+        except Exception:
+            log.exception("loop.step_failed")
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=interval)

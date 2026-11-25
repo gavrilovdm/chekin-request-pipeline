@@ -1,14 +1,14 @@
 """Postgres implementations of the request ports. Every state change is one conditional statement."""
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
 import asyncpg
 
 from pipeline.domain.request import CLAIMABLE, Status, Transition, ensure_transition
-from pipeline.ports import ClaimedRequest, CreateResult, RequestView, TenantRecord
+from pipeline.ports import ClaimedRequest, CreateResult, RequestView, TenantRecord, WebhookJob
 
 _CLAIMABLE = [s.value for s in CLAIMABLE]
 
@@ -119,3 +119,92 @@ class PgIntakeStore:
         """The request if it belongs to ``tenant_id``."""
         row = await self._pool.fetchrow(self._GET, request_id, tenant_id)
         return RequestView(**dict(row)) if row else None
+
+
+class PgDispatchStore:
+    """``SweepStore`` and ``WebhookStore``. Rows are handed out with ``FOR UPDATE SKIP LOCKED``.
+
+    Any number of dispatcher replicas can run: each gets a disjoint batch, no leader election needed.
+    """
+
+    # A row is due when its trigger time has passed and it was not re-published since that trigger
+    # (or that re-publish is older than stale_after, i.e. the message itself may have been lost).
+    _TAKE_DUE = """
+        WITH due AS (
+            SELECT id FROM requests
+             WHERE (status = 'received'
+                    AND COALESCE(enqueued_at, created_at) < now() - $1::interval)
+                OR (status = 'retry_scheduled' AND next_attempt_at <= now()
+                    AND (enqueued_at IS NULL OR enqueued_at < next_attempt_at
+                         OR enqueued_at < now() - $1::interval))
+                OR (status = 'processing' AND locked_until < now()
+                    AND (enqueued_at IS NULL OR enqueued_at < locked_until
+                         OR enqueued_at < now() - $1::interval))
+             LIMIT $2
+               FOR UPDATE SKIP LOCKED
+        )
+        UPDATE requests r SET enqueued_at = now()
+          FROM due WHERE r.id = due.id
+        RETURNING r.id, r.status
+    """
+
+    # At most $3 jobs per tenant per claim: a tenant whose endpoint hangs can hold one round of its own
+    # deliveries (<= the HTTP timeout), never the whole batch. Candidates are over-fetched so other tenants
+    # still fill the batch.
+    _CLAIM_WEBHOOKS = """
+        WITH candidates AS (
+            SELECT id, tenant_id FROM requests
+             WHERE webhook_pending AND webhook_next_at <= now()
+             ORDER BY webhook_next_at
+             LIMIT $1 * 4
+               FOR UPDATE SKIP LOCKED
+        ), ranked AS (
+            SELECT id, row_number() OVER (PARTITION BY tenant_id ORDER BY id) AS n FROM candidates
+        ), due AS (
+            SELECT id FROM ranked WHERE n <= $3 LIMIT $1
+        )
+        UPDATE requests r SET webhook_next_at = now() + $2::interval
+          FROM due, tenants t
+         WHERE r.id = due.id AND t.id = r.tenant_id
+        RETURNING r.id, r.tenant_id, t.webhook_url, t.webhook_secret, r.status, r.result, r.last_error,
+                  r.attempt, r.webhook_attempt
+    """
+
+    _DELIVERED = """
+        UPDATE requests SET webhook_pending = false, webhook_status = 'delivered',
+                            webhook_attempt = webhook_attempt + 1, webhook_next_at = NULL
+         WHERE id = $1 AND webhook_pending AND webhook_attempt = $2
+    """
+
+    _FAILED = """
+        UPDATE requests SET webhook_attempt = webhook_attempt + 1,
+                            webhook_next_at = $3::timestamptz,
+                            webhook_pending = ($3::timestamptz IS NOT NULL),
+                            webhook_status = CASE WHEN $3::timestamptz IS NULL THEN 'failed' END
+         WHERE id = $1 AND webhook_pending AND webhook_attempt = $2
+    """
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def take_due(self, stale_after: timedelta, limit: int) -> list[tuple[UUID, str]]:
+        """Stamp and return requests that need publishing."""
+        rows = await self._pool.fetch(self._TAKE_DUE, stale_after, limit)
+        return [(row["id"], row["status"]) for row in rows]
+
+    async def claim_due(self, limit: int, visibility: timedelta, per_tenant: int) -> list[WebhookJob]:
+        """Webhooks due now (at most ``per_tenant`` each), hidden from other senders for ``visibility``."""
+        rows = await self._pool.fetch(self._CLAIM_WEBHOOKS, limit, visibility, per_tenant)
+        return [
+            WebhookJob(r["id"], r["tenant_id"], r["webhook_url"], r["webhook_secret"], r["status"], r["result"],
+                       r["last_error"], r["attempt"], r["webhook_attempt"])
+            for r in rows
+        ]
+
+    async def mark_delivered(self, request_id: UUID, webhook_attempt: int) -> None:
+        """Delivered: clear the outbox flag (only if no other sender recorded this attempt first)."""
+        await self._pool.execute(self._DELIVERED, request_id, webhook_attempt)
+
+    async def mark_failed_attempt(self, request_id: UUID, webhook_attempt: int, next_at: datetime | None) -> None:
+        """Failed: schedule the next try, or give up when ``next_at`` is None. Fenced like ``mark_delivered``."""
+        await self._pool.execute(self._FAILED, request_id, webhook_attempt, next_at)

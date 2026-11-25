@@ -33,6 +33,11 @@ services:
       rabbitmq: {condition: service_healthy}
       downstream-mock: {condition: service_healthy}
 
+  dispatcher:
+    <<: *app
+    command: ["python", "-m", "pipeline", "dispatcher"]
+    stop_grace_period: 10s
+
   downstream-mock:
     image: chekin-pipeline:dev
     build: .
