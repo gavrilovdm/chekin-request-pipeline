@@ -48,9 +48,24 @@ def test_terminal_states_are_final(terminal):
             ensure_transition(terminal, dst)
 
 
-def test_cannot_skip_processing():
+ALLOWED_EDGES = {
+    (Status.RECEIVED, Status.PROCESSING),
+    (Status.RETRY_SCHEDULED, Status.PROCESSING),
+    (Status.PROCESSING, Status.PROCESSING),
+    (Status.PROCESSING, Status.DONE),
+    (Status.PROCESSING, Status.FAILED),
+    (Status.PROCESSING, Status.RETRY_SCHEDULED),
+    (Status.PROCESSING, Status.NEEDS_HUMAN),
+}
+
+
+@pytest.mark.parametrize(
+    ("src", "dst"), [(s, d) for s in Status for d in Status if (s, d) not in ALLOWED_EDGES]
+)
+def test_every_other_transition_is_rejected(src, dst):
+    """The complement of the lifecycle diagram: any edge added by accident fails here."""
     with pytest.raises(IllegalTransition):
-        ensure_transition(Status.RECEIVED, Status.DONE)
+        ensure_transition(src, dst)
 
 
 def test_claimable_and_terminal_sets():
@@ -85,8 +100,10 @@ def test_retryable_error_schedules_retry_within_backoff_ceiling():
     assert not t.notify
 
 
-@pytest.mark.parametrize(("attempt", "expected"), [(1, Status.RETRY_SCHEDULED), (2, Status.RETRY_SCHEDULED),
-                                                    (3, Status.NEEDS_HUMAN)])
+@pytest.mark.parametrize(
+    ("attempt", "expected"),
+    [(1, Status.RETRY_SCHEDULED), (2, Status.RETRY_SCHEDULED), (3, Status.NEEDS_HUMAN)],
+)
 def test_max_attempts_boundary(attempt, expected):
     assert decide(attempt, Outcome.retryable("timeout"), POLICY, NOW).status is expected
 

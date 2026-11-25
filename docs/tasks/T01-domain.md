@@ -8,12 +8,14 @@ Roadmap: [T1](../sdlc/roadmap.md) · Spec: [request lifecycle](../sdlc/spec.md#r
   - `Status`
   - `CLAIMABLE` and `TERMINAL`
   - `ensure_transition`
-  - `Outcome`
-  - `Transition`
+  - `OutcomeKind` and `Outcome`
+  - `Transition`, with `notify`: only final states are reported to the tenant (used by the webhook flag in T3 and T6)
   - `decide`
   - `exhausted_before_processing`
+- `src/pipeline/domain/__init__.py` — package docstring.
 - `src/pipeline/domain/retry_policy.py` — `RetryPolicy` with full-jitter exponential backoff.
 - `src/pipeline/domain/errors.py` — `RetryableError`, `PermanentError`, `IllegalTransition`.
+- `pyproject.toml` — ruff `line-length` 110 → 120 for the whole repo, so docstrings and SQL read unwrapped.
 - `tests/unit/test_domain.py`
 
 ## Order of work
@@ -44,7 +46,7 @@ Roadmap: [T1](../sdlc/roadmap.md) · Spec: [request lifecycle](../sdlc/spec.md#r
 
 - `make check` passes.
 - Tests cover:
-  - every allowed transition, and a rejected one out of each terminal state;
+  - every allowed transition, and every other (src, dst) pair rejected;
   - all three outcome kinds;
   - the `max_attempts` boundary;
   - the backoff ceiling, the cap and the jitter range;
