@@ -1,0 +1,217 @@
+<title>Request Pipeline Architecture</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column; wide diagrams scroll inside their own frame. Palette from signal lamps on a dispatch board. */
+:root{
+  --bg:#f6f7f9; --surface:#ffffff; --fg:#16202b; --muted:#5b6876; --line:#dde2e8;
+  --accent:#0b6e8a; --accent-soft:#e3f1f5;
+  --ok:#1f7a4d; --warn:#a15c00; --bad:#b3261e; --todo:#6b7280;
+  --display:"Instrument Sans", "Helvetica Neue", Arial, sans-serif;
+  --body:"Instrument Sans", "Helvetica Neue", Arial, sans-serif;
+  --mono:"JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f141a; --surface:#161d25; --fg:#e4e9ef; --muted:#93a1b0; --line:#26313d;
+  --accent:#4cb8d6; --accent-soft:#13303a; --ok:#5cc98f; --warn:#e3a54a; --bad:#f08079; --todo:#8b95a3; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f141a; --surface:#161d25; --fg:#e4e9ef; --muted:#93a1b0; --line:#26313d;
+  --accent:#4cb8d6; --accent-soft:#13303a; --ok:#5cc98f; --warn:#e3a54a; --bad:#f08079; --todo:#8b95a3; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:15px;line-height:1.55}
+.wrap{max-width:1040px;margin:0 auto;padding-block:32px 64px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:40px}
+header{display:grid;gap:10px}
+.eyebrow{font:600 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+h1{font:700 clamp(28px,4.4vw,42px)/1.1 var(--display);margin:0;text-wrap:balance;letter-spacing:-.01em}
+h2{font:650 22px/1.25 var(--display);margin:0 0 4px;text-wrap:balance}
+p{margin:0;max-width:68ch}
+.lede{color:var(--muted);font-size:17px}
+.facts{display:flex;flex-wrap:wrap;gap:8px 20px;font:500 13px/1.4 var(--mono);color:var(--muted)}
+.facts b{color:var(--fg);font-weight:600}
+section{display:grid;gap:14px;min-width:0}
+nav{display:flex;flex-wrap:wrap;gap:6px}
+nav a{font:500 13px/1 var(--mono);color:var(--accent);text-decoration:none;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
+nav a:hover,nav a:focus-visible{border-color:var(--accent);outline:none}
+.frame{background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:auto;max-height:82vh;padding:16px}
+.frame pre.mermaid{margin:0;display:flex;justify-content:center;min-width:640px;background:transparent}
+.frame:fullscreen{max-height:none;padding:32px}
+.tools{display:flex;gap:8px;justify-content:flex-end}
+.tools button{font:500 12px/1 var(--mono);padding:7px 10px;border-radius:6px;border:1px solid var(--line);background:var(--surface);color:var(--fg);cursor:pointer}
+.tools button:focus-visible{outline:2px solid var(--accent)}
+.tablewrap{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:14px;min-width:620px}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font:600 12px/1.2 var(--mono);text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+tr:last-child td{border-bottom:0}
+td code,p code,li code{font:500 12.5px/1.4 var(--mono);background:var(--accent-soft);padding:1px 5px;border-radius:4px}
+.chip{display:inline-block;font:600 11px/1 var(--mono);padding:5px 7px;border-radius:999px;border:1px solid currentColor;white-space:nowrap}
+.chip.done{color:var(--ok)} .chip.wip{color:var(--warn)} .chip.todo{color:var(--todo)} .chip.gap{color:var(--bad)}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px;display:grid;gap:8px;min-width:0}
+.card h3{font:600 15px/1.3 var(--display);margin:0}
+.card ul{margin:0;padding-left:18px;display:grid;gap:4px;color:var(--muted)}
+.note{color:var(--muted);font-size:13.5px}
+@media (prefers-reduced-motion: reduce){*{scroll-behavior:auto}}
+</style>
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">Chekin take-home · target architecture</div>
+  <h1>What happens after a worker takes a request off the queue</h1>
+  <p class="lede">A public API accepts requests from thousands of tenants. Postgres holds the truth, RabbitMQ only carries ids, and stateless asyncio workers claim, process and record each request exactly once in effect.</p>
+  <div class="facts"><span><b>1M</b> req/hour ≈ <b>280</b> rps</span><span>peak ×5 ≈ <b>1.4k</b> rps</span><span>delivery: <b>at-least-once</b></span><span>effect: <b>idempotent</b></span></div>
+  <nav aria-label="Sections"><a href="#components">Components</a><a href="#worker">Worker flow</a><a href="#states">States</a><a href="#failures">Failures</a><a href="#scaling">Scaling</a><a href="#roadmap">Roadmap</a><a href="#asbuilt">Target vs as-built</a></nav>
+</header>
+
+<section id="components">
+  <h2>Components</h2>
+  <p>Three services from one codebase plus two pieces of infrastructure. The sweeper is the safety net: any request that the queue lost, that is due for retry, or whose worker died is found in Postgres and re-enqueued.</p>
+  <div class="tools"><button type="button" data-fs="f1">Full screen</button></div>
+  <div class="frame" id="f1"><pre class="mermaid">
+flowchart TB
+  client(["Tenant client"])
+  api["api × N<br/>auth · validate · rate limit · load shedding"]
+  pg[("Postgres<br/>requests table = source of truth")]
+  mq[["RabbitMQ · quorum queue 'requests'<br/>message = request id"]]
+  dlq[["requests.dead<br/>poison messages"]]
+  w["worker × N<br/>asyncio · prefetch = concurrency"]
+  ds["Downstream service<br/>(mock: latency, error rate)"]
+  d["dispatcher × N<br/>sweeper · webhook sender"]
+  obs["Prometheus metrics · JSON logs · alert rules"]
+  client -->|"POST /v1/requests → 202 {id}"| api
+  client -->|"GET /v1/requests/{id}"| api
+  api -->|"insert, idempotent on (tenant, key)"| pg
+  api -->|"publish id, publisher confirm"| mq
+  mq -->|"deliver id"| w
+  mq -.->|"reject unparseable"| dlq
+  w -->|"claim · complete (fenced by attempt)"| pg
+  w -->|"process: timeout + Idempotency-Key"| ds
+  d -->|"SKIP LOCKED: lost · due · expired lease"| pg
+  d -->|"re-publish id"| mq
+  d -->|"signed webhook"| client
+  api -.-> obs
+  w -.-> obs
+  d -.-> obs
+  </pre></div>
+</section>
+
+<section id="worker">
+  <h2>Worker flow</h2>
+  <p>The message is only a hint. The worker trusts Postgres: a conditional <code>UPDATE … RETURNING</code> claims the request with a lease, and the completion is accepted only if the worker still holds that lease (<code>attempt</code> works as a fencing token).</p>
+  <div class="tools"><button type="button" data-fs="f2">Full screen</button></div>
+  <div class="frame" id="f2"><pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant Q as RabbitMQ
+  participant W as worker
+  participant DB as Postgres
+  participant DS as downstream
+  Q->>W: deliver {request_id}
+  W->>DB: claim: status→processing, attempt+1, locked_until=now+lease<br/>WHERE claimable OR lease expired
+  alt 0 rows: finished or held by another worker
+    W->>Q: ack, skip
+  else claimed, attempt > max (crash loop)
+    W->>DB: complete → needs_human
+    W->>Q: ack
+  else claimed
+    W->>DS: process(payload), timeout, Idempotency-Key = request_id
+    DS-->>W: result / retryable error / permanent error
+    Note over W: classify → done · retry_scheduled(next_attempt_at) · failed · needs_human
+    W->>DB: complete WHERE status=processing AND attempt=n
+    W->>Q: ack
+  end
+  </pre></div>
+</section>
+
+<section id="states">
+  <h2>Request states</h2>
+  <div class="tools"><button type="button" data-fs="f3">Full screen</button></div>
+  <div class="frame" id="f3"><pre class="mermaid">
+stateDiagram-v2
+  direction LR
+  [*] --> received: POST accepted
+  received --> processing: claim
+  retry_scheduled --> processing: claim when due
+  processing --> processing: lease expired, re-claim
+  processing --> done: success
+  processing --> failed: permanent error
+  processing --> retry_scheduled: retryable error, attempts left
+  processing --> needs_human: attempts exhausted
+  done --> [*]
+  failed --> [*]
+  needs_human --> [*]
+  </pre></div>
+  <p class="note">There is no <code>queued</code> state: <code>received</code> means accepted and maybe published. Duplicate publishes are harmless because the claim lets only one through. That saves one write per request.</p>
+</section>
+
+<section id="failures">
+  <h2>Failure modes</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>What breaks</th><th>What the system does</th><th>Proved by</th></tr></thead>
+    <tbody>
+      <tr><td>Publish fails after the insert</td><td>Client still gets <code>202</code>. Sweeper re-enqueues <code>received</code> rows older than <code>stale_after</code></td><td>T8 · RabbitMQ down at intake</td></tr>
+      <tr><td>Worker dies mid-processing</td><td>No ack, so RabbitMQ redelivers; the lease expires, so the claim succeeds again. The sweeper covers a lost message</td><td>T8 · <code>docker kill worker</code></td></tr>
+      <tr><td>Downstream slow or flaky (timeout, 5xx, 429)</td><td><code>retry_scheduled</code> with full-jitter backoff; sweeper re-enqueues when due</td><td>T8 · 50% errors</td></tr>
+      <tr><td>Downstream down for long</td><td>After <code>max_attempts</code>: <code>needs_human</code>, metric, alert</td><td>T8 · downstream down</td></tr>
+      <tr><td>Stale worker finishes late</td><td>Completion fenced by <code>attempt</code> is rejected; no overwrite</td><td>T2 · T3 unit and repo tests</td></tr>
+      <tr><td>Client retries the POST</td><td>Same <code>id</code> for the same key and body; <code>422</code> for a different body</td><td>T4 · T8</td></tr>
+      <tr><td>Unparseable message</td><td>Rejected to <code>requests.dead</code></td><td>T5</td></tr>
+      <tr><td>Queue backlog grows</td><td><code>503 + Retry-After</code> above a depth threshold; per-tenant <code>429</code></td><td>T4</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="scaling">
+  <h2>Scaling</h2>
+  <div class="cols">
+    <div class="card"><h3>Capacity math</h3><ul>
+      <li>280 rps × 0.5 s downstream ≈ 140 requests in flight</li>
+      <li>50 concurrent per worker → 3 workers on average, ~15 at peak</li>
+      <li>≈3 DB writes per request → ~1k writes/s, ~5k at peak</li>
+    </ul></div>
+    <div class="card"><h3>Why asyncio in one process</h3><ul>
+      <li>The work is I/O-bound: waiting on Postgres and the downstream</li>
+      <li>Threads add GIL contention and memory for no gain here</li>
+      <li>Processes are for CPU-bound work; we scale by containers instead</li>
+    </ul></div>
+    <div class="card"><h3>Limits of each unit</h3><ul>
+      <li>Coroutine: blocked by any sync call; capped by the semaphore</li>
+      <li>Process: one CPU core (GIL), its own memory and connection pool</li>
+      <li>Container: CPU and memory quota; DB connections are the shared ceiling</li>
+    </ul></div>
+  </div>
+</section>
+
+<section id="roadmap">
+  <h2>Roadmap</h2>
+  <p>Each task is one AI-native SDLC cycle: plan → build (tests first) → <code>make check</code> → fresh-context verifier against <code>REVIEW.md</code> → PR with evidence → lessons into <code>AGENTS.md</code>.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>#</th><th>Task</th><th>Proof</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>T0</td><td>Foundation: intent, spec, roadmap, tooling, CI, review rules</td><td><code>make check</code>, CI green</td><td><span class="chip wip">in progress</span></td></tr>
+      <tr><td>T1</td><td>Domain: state machine, retry policy, errors</td><td>unit tests per transition, backoff bounds</td><td><span class="chip todo">planned</span></td></tr>
+      <tr><td>T2</td><td>Worker core: ports, <code>RequestHandler</code></td><td>unit tests on fakes, 8 outcomes</td><td><span class="chip todo">planned</span></td></tr>
+      <tr><td>T3</td><td>Persistence and messaging, compose infra</td><td>claim, fencing, idempotent insert vs real Postgres</td><td><span class="chip todo">planned</span></td></tr>
+      <tr><td>T4</td><td>Intake API</td><td>202, replay, 422, 401, 429, 503</td><td><span class="chip todo">planned</span></td></tr>
+      <tr><td>T5</td><td>Worker runtime, downstream mock</td><td>e2e: POST → done</td><td><span class="chip todo">planned</span></td></tr>
+      <tr><td>T6</td><td>Dispatcher: sweeper, webhooks</td><td>lost publish recovered, signed webhook</td><td><span class="chip todo">planned</span></td></tr>
+      <tr><td>T7</td><td>Observability</td><td><code>/metrics</code>, <code>/readyz</code></td><td><span class="chip todo">planned</span></td></tr>
+      <tr><td>T8</td><td>Failure scenarios</td><td>5 chaos tests</td><td><span class="chip todo">planned</span></td></tr>
+      <tr><td>T9</td><td>Load test, capacity report</td><td>throughput and p95, 1 vs 4 workers</td><td><span class="chip todo">planned</span></td></tr>
+      <tr><td>T10</td><td>README, ADRs, as-built comparison</td><td>this page, gaps closed or explained</td><td><span class="chip todo">planned</span></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="asbuilt">
+  <h2>Target vs as-built</h2>
+  <p class="note">Filled in at T10: each component and guarantee above is checked against the code, with gaps fixed or explained.</p>
+</section>
+</div>
+
+<script>
+document.querySelectorAll('[data-fs]').forEach(b=>b.addEventListener('click',()=>{
+  const el=document.getElementById(b.dataset.fs);
+  try{ if(document.fullscreenElement){document.exitFullscreen()} else {el.requestFullscreen()} }catch(e){}
+}));
+</script>

@@ -14,11 +14,11 @@ The focus is what happens after a worker takes a request off the queue. Decision
 
 ```bash
 uv sync                      # install
+make check                   # lint + docs rule + unit tests; the definition of "done" for every task
 uv run pytest tests/unit     # fast tests, no Docker
 make up                      # postgres, rabbitmq, api, worker, dispatcher, downstream-mock
 make test-integration        # end-to-end and failure scenarios against the running stack
 make load                    # locust load test
-uvx ruff check .             # lint
 ```
 
 ## Structure
@@ -37,3 +37,23 @@ uvx ruff check .             # lint
 - All repo content is in English: it is read by the hiring team.
 - State changes go through `domain/request.py`; never `UPDATE status` around it.
 - Every handler must stay idempotent: messages are delivered at least once.
+
+## How work is done here
+
+Every change is one roadmap task (`docs/sdlc/roadmap.md`) and one PR:
+1. Plan: write `docs/tasks/TNN-*.md` (files that change, order, risks, proof).
+2. Build: write tests first where the code is pure.
+3. Test: run `make check`, plus `make test-integration` from T3 on.
+4. Review: run the `verifier` agent against the plan and `REVIEW.md`.
+5. Ship: open a PR with real command output.
+
+If the implementation diverges from the task plan, update the plan in the same commit.
+
+## Verifying your work
+
+Do not report a task done without pasting the tail of `make check` output (and `make test-integration` when the
+task touches Docker services) into the PR under "How checked".
+
+## Things Claude gets wrong
+
+- (empty: add a line when the same mistake happens twice)
