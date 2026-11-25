@@ -6,14 +6,14 @@ from uuid import uuid4
 import aio_pika
 import pytest
 
-from pipeline.adapters.rabbitmq import DEAD_QUEUE, RabbitPublisher, declare_topology
+from pipeline.adapters.rabbitmq import DEAD_QUEUE, RabbitPublisher, declare_topology, open_channel
 from tests.integration.conftest import AMQP_URL
 
 
 @pytest.fixture
 async def channel():
     connection = await aio_pika.connect_robust(AMQP_URL)
-    channel = await connection.channel(publisher_confirms=True)
+    channel = await open_channel(connection)
     yield channel
     await connection.close()
 
@@ -63,3 +63,12 @@ async def test_rejected_message_goes_to_dead_letter_queue(channel):
             break
         await asyncio.sleep(0.1)
     assert dead_message is not None and dead_message.body == b"not-a-uuid"
+
+
+async def test_unroutable_publish_raises(channel):
+    """If the queue is missing, publish must fail so the API leaves the request to the sweeper."""
+    await declare_topology(channel)
+    publisher = RabbitPublisher(channel, timeout=2.0, routing_key=f"missing-{uuid4()}")
+
+    with pytest.raises(aio_pika.exceptions.DeliveryError):
+        await publisher.publish(uuid4())

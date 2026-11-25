@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://pipeline:pipeline@localhost:55432/pipeline"
     amqp_url: str = "amqp://guest:guest@localhost:5672/"
     db_pool_size: int = 10
+    db_command_timeout_s: float = 5.0
 
     # worker
     worker_concurrency: int = 50  # in-flight requests per worker process == RabbitMQ prefetch

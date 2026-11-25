@@ -1,16 +1,5 @@
 name: chekin-pipeline
 
-x-app: &app
-  build: .
-  restart: unless-stopped
-  environment: &app-env
-    PIPELINE_DATABASE_URL: postgresql://pipeline:pipeline@postgres:5432/pipeline
-    PIPELINE_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
-    PIPELINE_DOWNSTREAM_URL: http://downstream-mock:8081
-  depends_on:
-    postgres: {condition: service_healthy}
-    rabbitmq: {condition: service_healthy}
-
 services:
   postgres:
     image: postgres:17-alpine

@@ -17,9 +17,15 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
     await conn.set_type_codec("jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
 
 
-async def create_pool(dsn: str, size: int = 10) -> asyncpg.Pool:
-    """Connection pool with jsonb mapped to Python dicts."""
-    return await asyncpg.create_pool(dsn, min_size=1, max_size=size, init=_init_connection)
+async def create_pool(dsn: str, size: int = 10, command_timeout: float = 5.0) -> asyncpg.Pool:
+    """Connection pool with jsonb mapped to Python dicts.
+
+    ``command_timeout`` bounds every query: if Postgres stalls, callers get an error instead of hanging forever
+    (a hung worker would hold its prefetched deliveries unacked and stop consuming).
+    """
+    return await asyncpg.create_pool(
+        dsn, min_size=1, max_size=size, init=_init_connection, command_timeout=command_timeout
+    )
 
 
 class PgRequestRepository:

@@ -11,10 +11,14 @@ Roadmap: [T3](../sdlc/roadmap.md) · Builds on: [T2 ports](T02-worker-core.md)
   - `create_pool` (jsonb codec)
   - `PgRequestRepository`, which implements `RequestRepository`: claim and fenced complete
   - `PgIntakeStore`: idempotent create, tenant-scoped get, tenant lookup by key hash
-- `src/pipeline/ports.py`: add `IntakeStore`, `TenantRecord`, `RequestView`, `CreateResult`.
+- `src/pipeline/ports.py`: add `IntakeStore`, `TenantRecord`, `RequestView`, `CreateResult`, `Publisher`.
+- `src/pipeline/domain/request.py`: `Transition` rejects `processing` and `received`, because an attempt cannot end there (review fix).
+- `AGENTS.md`: first "Things Claude gets wrong" entry (plan drift in T0 and T1).
 - `src/pipeline/adapters/rabbitmq.py`
   - `declare_topology`: quorum queue `requests` with DLX → `requests.dead`
-  - `RabbitPublisher`: persistent messages, publisher confirms, timeout, queue depth
+  - `open_channel`: publisher confirms + `on_return_raises`, so an unroutable message raises
+  - `RabbitPublisher`: persistent messages, `mandatory`, confirms, timeout, queue depth
+- `create_pool(command_timeout=5 s)`: every query is bounded, so a stalled Postgres causes errors instead of hangs
 - `docker-compose.yml`: `postgres` and `rabbitmq` with healthchecks. Migrations run through `docker-entrypoint-initdb.d`.
 - `tests/integration/conftest.py`, `tests/integration/test_postgres.py`, `tests/integration/test_rabbitmq.py`
 

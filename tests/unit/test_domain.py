@@ -8,6 +8,7 @@ from pipeline.domain.request import (
     TERMINAL,
     Outcome,
     Status,
+    Transition,
     decide,
     ensure_transition,
     exhausted_before_processing,
@@ -146,3 +147,9 @@ def test_default_jitter_stays_in_range():
 def test_policy_rejects_nonsense(kwargs):
     with pytest.raises(ValueError):
         RetryPolicy(**kwargs)
+
+
+@pytest.mark.parametrize("status", [Status.PROCESSING, Status.RECEIVED])
+def test_an_attempt_cannot_end_in_a_non_final_waiting_state(status):
+    with pytest.raises(IllegalTransition):
+        Transition(status)

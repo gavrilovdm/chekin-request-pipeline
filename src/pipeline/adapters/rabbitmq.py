@@ -10,6 +10,11 @@ DEAD_EXCHANGE = "requests.dlx"
 DEAD_QUEUE = "requests.dead"
 
 
+async def open_channel(connection: aio_pika.abc.AbstractRobustConnection) -> AbstractChannel:
+    """A channel where publishes are confirmed and an unroutable message raises instead of passing silently."""
+    return await connection.channel(publisher_confirms=True, on_return_raises=True)
+
+
 async def declare_topology(channel: AbstractChannel) -> AbstractQueue:
     """Declare the work queue and its dead-letter queue. Idempotent; every service calls it on start.
 
@@ -33,9 +38,10 @@ class RabbitPublisher:
     missing confirm within ``timeout`` raises, so the caller knows the sweeper must pick the request up later.
     """
 
-    def __init__(self, channel: AbstractChannel, timeout: float) -> None:
+    def __init__(self, channel: AbstractChannel, timeout: float, routing_key: str = QUEUE) -> None:
         self._channel = channel
         self._timeout = timeout
+        self._routing_key = routing_key
 
     async def publish(self, request_id: UUID) -> None:
         """Publish one request id and wait for the confirm."""
@@ -45,8 +51,9 @@ class RabbitPublisher:
             message_id=str(request_id),
             content_type="text/plain",
         )
-        await self._channel.default_exchange.publish(message, routing_key=QUEUE, mandatory=True,
-                                                     timeout=self._timeout)
+        await self._channel.default_exchange.publish(
+            message, routing_key=self._routing_key, mandatory=True, timeout=self._timeout
+        )
 
     async def queue_depth(self) -> int:
         """Messages ready in the work queue (not counting unacked ones in flight)."""
