@@ -31,6 +31,9 @@ This is the heart of the take-home: what happens after a worker takes a request 
 - **Claim → process → classify → complete.**
   - The claim is a conditional update. It returns the request or `None`.
   - `None` means another worker holds it or it is already final. The handler returns `SKIPPED`, and the caller acks.
+- **A retry is claimable only when due.** `retry_scheduled` is claimed only once `next_attempt_at <= now`. Otherwise a
+  duplicate message (redelivery, sweeper re-publish) would skip the backoff and burn attempts.
+- **Error text is clipped** to 2,000 characters in `Outcome` (domain), because it is stored and logged on every attempt.
 - **Fencing.** `complete(id, attempt, transition)` applies only if the row is still `processing` with the same `attempt`.
   - Scenario: a slow worker whose lease expired, while another worker re-claimed the row.
   - The slow worker gets `LEASE_LOST` and its write is dropped.

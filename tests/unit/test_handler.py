@@ -160,6 +160,33 @@ async def test_cancellation_propagates_for_graceful_shutdown(repo, clock):
     assert repo.rows[rid].status is Status.PROCESSING  # lease will expire; the sweeper re-enqueues it
 
 
+async def test_retry_not_yet_due_is_skipped(repo, clock):
+    """A duplicate message for a scheduled retry must not skip the backoff and burn an attempt."""
+    rid = repo.add(status=Status.RETRY_SCHEDULED, attempt=1, next_attempt_at=clock.now + timedelta(seconds=2))
+    processor = ScriptedProcessor({"ref": "x"})
+    handler = make_handler(repo, clock, processor)
+
+    assert await handler.handle(rid) is HandleResult.SKIPPED
+    assert processor.calls == []
+
+    clock.advance(2.1)
+    assert await handler.handle(rid) is HandleResult.DONE
+
+
+async def test_huge_error_text_is_clipped(repo, clock):
+    rid = repo.add()
+    handler = make_handler(repo, clock, ScriptedProcessor(RetryableError("<html>" + "x" * 2_000_000)))
+
+    await handler.handle(rid)
+
+    assert len(repo.rows[rid].last_error) == 2000
+
+
+def test_timeout_must_be_positive(repo, clock):
+    with pytest.raises(ValueError):
+        RequestHandler(repo, ScriptedProcessor({}), POLICY, lease=LEASE, timeout=0, clock=clock)
+
+
 def test_lease_must_outlive_timeout(repo, clock):
     with pytest.raises(ValueError):
         RequestHandler(repo, ScriptedProcessor({}), POLICY, lease=timedelta(seconds=5), timeout=5.0, clock=clock)

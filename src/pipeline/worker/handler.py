@@ -48,6 +48,8 @@ class RequestHandler:
         timeout: float,
         clock: Clock = utcnow,
     ) -> None:
+        if timeout <= 0:
+            raise ValueError("processing timeout must be positive")
         if lease.total_seconds() <= timeout:
             raise ValueError("lease must be longer than the processing timeout, or healthy attempts lose it")
         self._repo = repo

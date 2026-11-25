@@ -48,6 +48,13 @@ def ensure_transition(src: Status, dst: Status) -> None:
         raise IllegalTransition(f"{src} -> {dst}")
 
 
+MAX_ERROR_LENGTH = 2000  # error text is stored and logged on every attempt; a 2 MB HTML error page must not be
+
+
+def _clip(error: str) -> str:
+    return error if len(error) <= MAX_ERROR_LENGTH else error[: MAX_ERROR_LENGTH - 1] + "…"
+
+
 class OutcomeKind(StrEnum):
     """How one processing attempt ended."""
 
@@ -72,12 +79,12 @@ class Outcome:
     @classmethod
     def retryable(cls, error: str) -> "Outcome":
         """The attempt failed but may succeed later."""
-        return cls(OutcomeKind.RETRYABLE, error=error)
+        return cls(OutcomeKind.RETRYABLE, error=_clip(error))
 
     @classmethod
     def permanent(cls, error: str) -> "Outcome":
         """The attempt failed and will fail again."""
-        return cls(OutcomeKind.PERMANENT, error=error)
+        return cls(OutcomeKind.PERMANENT, error=_clip(error))
 
 
 @dataclass(frozen=True)

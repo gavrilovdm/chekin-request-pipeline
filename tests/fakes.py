@@ -39,17 +39,23 @@ class InMemoryRepository:
         self.clock = clock
         self.rows: dict[UUID, Row] = {}
 
-    def add(self, *, status: Status = Status.RECEIVED, attempt: int = 0, locked_until: datetime | None = None) -> UUID:
+    def add(self, *, status: Status = Status.RECEIVED, attempt: int = 0, locked_until: datetime | None = None,
+            next_attempt_at: datetime | None = None) -> UUID:
         rid = uuid4()
-        self.rows[rid] = Row(rid, "tenant-a", {"n": 1}, status=status, attempt=attempt, locked_until=locked_until)
+        self.rows[rid] = Row(rid, "tenant-a", {"n": 1}, status=status, attempt=attempt, locked_until=locked_until,
+                             next_attempt_at=next_attempt_at)
         return rid
 
     async def claim(self, request_id: UUID, lease: timedelta) -> ClaimedRequest | None:
         row = self.rows.get(request_id)
         if row is None:
             return None
-        expired = row.status is Status.PROCESSING and row.locked_until is not None and row.locked_until < self.clock()
-        if row.status not in CLAIMABLE and not expired:
+        now = self.clock()
+        expired = row.status is Status.PROCESSING and row.locked_until is not None and row.locked_until < now
+        retry_not_due = (
+            row.status is Status.RETRY_SCHEDULED and row.next_attempt_at is not None and row.next_attempt_at > now
+        )
+        if (row.status not in CLAIMABLE and not expired) or retry_not_due:
             return None
         ensure_transition(row.status, Status.PROCESSING)
         row.status = Status.PROCESSING

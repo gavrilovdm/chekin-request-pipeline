@@ -25,7 +25,11 @@ class RequestRepository(Protocol):
     """Request state as the worker needs it."""
 
     async def claim(self, request_id: UUID, lease: timedelta) -> ClaimedRequest | None:
-        """Atomically take the request if it is claimable or its lease expired; ``None`` otherwise."""
+        """Atomically take the request; ``None`` if it is not claimable right now.
+
+        Claimable: ``received``; ``retry_scheduled`` whose ``next_attempt_at`` has passed (a duplicate message must
+        not skip the backoff); ``processing`` whose lease expired. The lease is set to ``now + lease``.
+        """
         ...
 
     async def complete(self, request_id: UUID, attempt: int, transition: Transition) -> bool:
