@@ -6,7 +6,7 @@ from uuid import uuid4
 import aio_pika
 import pytest
 
-from pipeline.adapters.rabbitmq import DEAD_QUEUE, RabbitPublisher, declare_topology, open_channel
+from pipeline.adapters.rabbitmq import RabbitPublisher, dead_letter_names, declare_topology, open_channel
 from tests.integration.conftest import AMQP_URL
 
 
@@ -18,17 +18,28 @@ async def channel():
     await connection.close()
 
 
+@pytest.fixture
+async def test_queue(channel):
+    """A private work queue per test, so a running worker cannot steal the messages."""
+    name = f"test-requests-{uuid4()}"
+    queue = await declare_topology(channel, name)
+    yield queue
+    await queue.delete(if_unused=False, if_empty=False)
+    dead = await channel.get_queue(dead_letter_names(name)[1])
+    await dead.delete(if_unused=False, if_empty=False)
+    await channel.exchange_delete(dead_letter_names(name)[0])
+
+
 async def drain(queue):
     while await queue.get(fail=False, no_ack=True):
         pass
 
 
-async def test_publish_then_consume_carries_only_the_id(channel):
-    queue = await declare_topology(channel)
-    await drain(queue)
+async def test_publish_then_consume_carries_only_the_id(channel, test_queue):
+    queue = test_queue
     rid = uuid4()
 
-    await RabbitPublisher(channel, timeout=2.0).publish(rid)
+    await RabbitPublisher(channel, timeout=2.0, routing_key=queue.name).publish(rid)
     message = await queue.get(timeout=5)
 
     assert message.body.decode() == str(rid)
@@ -36,22 +47,17 @@ async def test_publish_then_consume_carries_only_the_id(channel):
     await message.ack()
 
 
-async def test_queue_depth_is_reported(channel):
-    queue = await declare_topology(channel)
-    await drain(queue)
-    publisher = RabbitPublisher(channel, timeout=2.0)
+async def test_queue_depth_is_reported(channel, test_queue):
+    publisher = RabbitPublisher(channel, timeout=2.0, routing_key=test_queue.name)
     for _ in range(3):
         await publisher.publish(uuid4())
 
     assert await publisher.queue_depth() == 3
-    await drain(queue)
 
 
-async def test_rejected_message_goes_to_dead_letter_queue(channel):
-    queue = await declare_topology(channel)
-    await drain(queue)
-    dead = await channel.get_queue(DEAD_QUEUE)
-    await drain(dead)
+async def test_rejected_message_goes_to_dead_letter_queue(channel, test_queue):
+    queue = test_queue
+    dead = await channel.get_queue(dead_letter_names(queue.name)[1])
 
     await channel.default_exchange.publish(aio_pika.Message(b"not-a-uuid"), routing_key=queue.name)
     message = await queue.get(timeout=5)
@@ -67,7 +73,6 @@ async def test_rejected_message_goes_to_dead_letter_queue(channel):
 
 async def test_unroutable_publish_raises(channel):
     """If the queue is missing, publish must fail so the API leaves the request to the sweeper."""
-    await declare_topology(channel)
     publisher = RabbitPublisher(channel, timeout=2.0, routing_key=f"missing-{uuid4()}")
 
     with pytest.raises(aio_pika.exceptions.DeliveryError):

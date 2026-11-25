@@ -7,8 +7,6 @@ import aio_pika
 from aio_pika.abc import AbstractChannel, AbstractQueue
 
 QUEUE = "requests"
-DEAD_EXCHANGE = "requests.dlx"
-DEAD_QUEUE = "requests.dead"
 
 
 async def open_channel(connection: aio_pika.abc.AbstractRobustConnection) -> AbstractChannel:
@@ -16,20 +14,26 @@ async def open_channel(connection: aio_pika.abc.AbstractRobustConnection) -> Abs
     return await connection.channel(publisher_confirms=True, on_return_raises=True)
 
 
-async def declare_topology(channel: AbstractChannel) -> AbstractQueue:
+async def declare_topology(channel: AbstractChannel, queue: str = QUEUE) -> AbstractQueue:
     """Declare the work queue and its dead-letter queue. Idempotent; every service calls it on start.
 
     ``requests`` is a quorum queue: replicated across nodes in a cluster and durable on disk. Messages a consumer
     rejects (unparseable bodies) are routed to ``requests.dead`` for inspection instead of looping.
     """
-    dlx = await channel.declare_exchange(DEAD_EXCHANGE, aio_pika.ExchangeType.FANOUT, durable=True)
-    dead = await channel.declare_queue(DEAD_QUEUE, durable=True, arguments={"x-queue-type": "quorum"})
+    dead_exchange, dead_queue = dead_letter_names(queue)
+    dlx = await channel.declare_exchange(dead_exchange, aio_pika.ExchangeType.FANOUT, durable=True)
+    dead = await channel.declare_queue(dead_queue, durable=True, arguments={"x-queue-type": "quorum"})
     await dead.bind(dlx)
     return await channel.declare_queue(
-        QUEUE,
+        queue,
         durable=True,
-        arguments={"x-queue-type": "quorum", "x-dead-letter-exchange": DEAD_EXCHANGE},
+        arguments={"x-queue-type": "quorum", "x-dead-letter-exchange": dead_exchange},
     )
+
+
+def dead_letter_names(queue: str) -> tuple[str, str]:
+    """Dead-letter exchange and queue for a work queue (``requests`` -> ``requests.dlx``, ``requests.dead``)."""
+    return f"{queue}.dlx", f"{queue}.dead"
 
 
 class RabbitPublisher:
@@ -60,5 +64,5 @@ class RabbitPublisher:
         """Messages ready in the work queue (not counting unacked ones in flight)."""
         # A raw passive declare: aio-pika's robust channel caches the declaration result, so its count goes stale.
         channel = await asyncio.wait_for(self._channel.get_underlay_channel(), timeout=self._timeout)
-        result = await channel.queue_declare(QUEUE, passive=True, timeout=self._timeout)
+        result = await channel.queue_declare(self._routing_key, passive=True, timeout=self._timeout)
         return result.message_count or 0

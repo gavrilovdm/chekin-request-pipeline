@@ -24,6 +24,26 @@ services:
       timeout: 3s
       retries: 20
 
+  worker:
+    <<: *app
+    command: ["python", "-m", "pipeline", "worker"]
+    stop_grace_period: 30s
+    depends_on:
+      postgres: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+      downstream-mock: {condition: service_healthy}
+
+  downstream-mock:
+    image: chekin-pipeline:dev
+    build: .
+    command: ["uvicorn", "mock_downstream.app:app", "--host", "0.0.0.0", "--port", "8081", "--no-access-log"]
+    ports: ["8081:8081"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/healthz')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
   postgres:
     image: postgres:17-alpine
     environment:
