@@ -21,8 +21,8 @@ class FakeSweepStore:
         self.due = due
         self.calls = []
 
-    async def take_due(self, stale_after, limit):
-        self.calls.append((stale_after, limit))
+    async def take_due(self, stale_after, limit, recover_lost):
+        self.calls.append((stale_after, limit, recover_lost))
         return self.due
 
 
@@ -42,9 +42,9 @@ async def test_sweeper_publishes_every_due_id():
     store = FakeSweepStore([(i, "received") for i in ids])
     publisher = FlakyPublisher()
 
-    assert await Sweeper(store, publisher, timedelta(seconds=60), batch=500).sweep_once() == 3
+    assert await Sweeper(store, publisher, timedelta(seconds=60), batch=500, queue_depth=depth(0)).sweep_once() == 3
     assert sorted(publisher.published) == sorted(ids)
-    assert store.calls == [(timedelta(seconds=60), 500)]
+    assert store.calls == [(timedelta(seconds=60), 500, True)]
 
 
 async def test_sweeper_survives_a_failed_publish():
@@ -52,9 +52,29 @@ async def test_sweeper_survives_a_failed_publish():
     publisher = FlakyPublisher(fail_ids={ids[1]})
 
     published = await Sweeper(FakeSweepStore([(i, "retry_scheduled") for i in ids]), publisher,
-                              timedelta(seconds=60), batch=500).sweep_once()
+                              timedelta(seconds=60), batch=500, queue_depth=depth(0)).sweep_once()
 
     assert published == 2 and ids[1] not in publisher.published  # picked again after stale_after
+
+
+def depth(value=None, error=None):
+    async def read():
+        if error:
+            raise error
+        return value
+
+    return read
+
+
+async def test_no_lost_message_recovery_while_the_queue_has_a_backlog():
+    """Under a backlog an unclaimed request is still queued; re-publishing it only adds duplicates."""
+    store = FakeSweepStore([])
+
+    await Sweeper(store, FlakyPublisher(), timedelta(seconds=60), batch=500, queue_depth=depth(20_000)).sweep_once()
+    await Sweeper(store, FlakyPublisher(), timedelta(seconds=60), batch=500,
+                  queue_depth=depth(error=ConnectionError())).sweep_once()
+
+    assert [call[2] for call in store.calls] == [False, False]
 
 
 # --- webhooks ----------------------------------------------------------------

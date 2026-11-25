@@ -52,10 +52,10 @@ async def test_worker_killed_mid_processing_still_finishes(api, mock, pool):
     view = await wait_for(api, rid, limit_s=60)  # lease (15 s) expires, the sweeper re-publishes
 
     assert view["status"] == "done" and view["attempt"] == 2
-    # The killed attempt's call still completes inside the mock; attempt 2 reuses the same Idempotency-Key,
-    # so the downstream applied exactly one effect for two calls.
+    # Both attempts used the request id as Idempotency-Key (a per-attempt key would show calls == 1 here), so the
+    # downstream stored one result for two calls. A global success count is not used: other tests' requests
+    # recovered by the sweeper also reach the mock while this one runs.
     assert (await calls_for(mock, rid)) == {"calls": 2, "succeeded": True}
-    assert (await mock.get("/admin/stats")).json()["successes"] == 1
 
 
 async def test_flaky_downstream_is_absorbed_by_retries(api, mock):

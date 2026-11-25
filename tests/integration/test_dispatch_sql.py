@@ -28,8 +28,8 @@ async def new_row(store, pool, tenant="tenant-a", **fields):
     return rid
 
 
-async def due_ids(dispatch):
-    return {rid for rid, _ in await dispatch.take_due(STALE, 10_000)}
+async def due_ids(dispatch, recover_lost=True):
+    return {rid for rid, _ in await dispatch.take_due(STALE, 10_000, recover_lost)}
 
 
 def ago(seconds):
@@ -103,3 +103,14 @@ async def test_webhook_claim_caps_jobs_per_tenant(store, pool, dispatch):
     jobs = [j for j in await dispatch.claim_due(100, timedelta(seconds=60), 2) if j.request_id in ids]
 
     assert len(jobs) == 2
+
+
+async def test_backlog_mode_skips_lost_message_recovery_but_not_due_work(store, pool, dispatch):
+    await due_ids(dispatch)
+    lost = await new_row(store, pool, created_at=ago(120))
+    retry_due = await new_row(store, pool, status="retry_scheduled", attempt=1, next_attempt_at=ago(1))
+
+    due = await due_ids(dispatch, recover_lost=False)
+
+    assert retry_due in due and lost not in due
+    assert lost in await due_ids(dispatch, recover_lost=True)

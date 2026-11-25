@@ -29,5 +29,4 @@ logs:
 	docker compose logs -f --tail=100
 
 load:
-	uv run --group load locust -f loadtest/locustfile.py --headless -u $(or $(USERS),300) -r 50 -t $(or $(TIME),2m) \
-		--host http://localhost:8000 --csv loadtest/results/run --html loadtest/results/run.html
+	loadtest/run.sh $(or $(WORKERS),1) $(or $(USERS),300) $(or $(TIME),60s)
