@@ -24,6 +24,7 @@ class Config(BaseModel):
     error_rate: float = 0.0  # share of calls answered 503 (retryable)
     permanent_rate: float = 0.0  # share of calls answered 422 (permanent)
     down: bool = False  # answer every call with 503
+    fail_first: int = 0  # each Idempotency-Key gets 503 on its first N calls, then succeeds (deterministic flakiness)
 
 
 app = FastAPI(title="downstream-mock")
@@ -32,12 +33,14 @@ results: dict[str, dict[str, Any]] = {}
 stats = {"calls": 0, "successes": 0, "duplicate_calls_after_success": 0, "errors": 0}
 webhooks: list[dict[str, Any]] = []
 locks: dict[str, asyncio.Lock] = {}
+calls_per_key: dict[str, int] = {}
 
 
 @app.post("/process", response_model=None)
 async def process(body: dict[str, Any], idempotency_key: str = Header(...)) -> Response | dict[str, Any]:
     """Pretend to do the work; the same Idempotency-Key always gets the same result."""
     stats["calls"] += 1
+    calls_per_key[idempotency_key] = calls_per_key.get(idempotency_key, 0) + 1
     async with locks.setdefault(idempotency_key, asyncio.Lock()):  # concurrent calls with one key: one effect
         if idempotency_key in results:
             stats["duplicate_calls_after_success"] += 1
@@ -48,7 +51,7 @@ async def process(body: dict[str, Any], idempotency_key: str = Header(...)) -> R
 async def _attempt(body: dict[str, Any], idempotency_key: str) -> Response | dict[str, Any]:
     await asyncio.sleep(max(0.0, random.gauss(config.latency_ms, config.jitter_ms / 2)) / 1000)
     roll = random.random()
-    if config.down or roll < config.error_rate:
+    if config.down or calls_per_key[idempotency_key] <= config.fail_first or roll < config.error_rate:
         stats["errors"] += 1
         return Response("temporarily unavailable", status_code=503)
     if roll < config.error_rate + config.permanent_rate:
@@ -86,6 +89,12 @@ async def get_stats() -> dict[str, int]:
     return stats
 
 
+@app.get("/admin/calls/{key}")
+async def calls_for(key: str) -> dict[str, Any]:
+    """How many times one Idempotency-Key was called, and whether it has a stored result."""
+    return {"calls": calls_per_key.get(key, 0), "succeeded": key in results}
+
+
 @app.get("/admin/webhooks")
 async def get_webhooks(request_id: str | None = None) -> list[dict[str, Any]]:
     """Webhooks received, optionally for one request."""
@@ -100,6 +109,7 @@ async def reset() -> dict[str, str]:
     results.clear()
     webhooks.clear()
     locks.clear()
+    calls_per_key.clear()
     for key in stats:
         stats[key] = 0
     return {"status": "reset"}

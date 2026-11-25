@@ -34,7 +34,10 @@ packages = ["src/pipeline", "mock_downstream"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-markers = ["integration: needs the docker compose stack (make up)"]
+markers = [
+    "integration: needs the docker compose stack (make up)",
+    "chaos: kills and stops compose services; slow (make test-chaos)",
+]
 
 [tool.ruff]
 line-length = 120
