@@ -1,74 +1,87 @@
-# Request pipeline for a public API
+# Request pipeline
 
-Follow-up to the Chekin system design interview. The task was a public API that receives requests from thousands of tenants (about **1M per hour**). The interview diagram covered intake: auth → validate → persist → queue → workers, plus observability. The open question was **what happens after a worker takes a request off the queue**, and how that part scales and survives failures.
+An asynchronous processing pipeline behind a public API. Tenants submit requests over HTTP and get `202 Accepted` back. The pipeline then:
+- processes each request against a downstream service;
+- retries failures with backoff;
+- reports the final state to the tenant by polling or a signed webhook.
 
-This repository is a runnable prototype of that part. It also contains the decisions behind it, each with the alternatives considered.
+The pipeline keeps three guarantees:
+- every accepted request reaches a final state;
+- no request takes effect twice;
+- no tenant can degrade service for the others.
 
-## Guarantees and the evidence for each
+> Built as a follow-up to a system design interview at Chekin. The target load was ~1M requests per hour from thousands of tenants. The interview covered intake; this repository covers **what happens after a worker takes a request off the queue**.
 
-| Guarantee | How | Proved by |
-|---|---|---|
-| Every accepted request reaches a final state | Postgres is the source of truth. A sweeper re-publishes lost messages, due retries and expired leases | `test_lost_publish_is_recovered_by_the_sweeper`, `test_broker_down_at_intake_is_recovered_without_client_retry`, `test_worker_killed_mid_processing_still_finishes` |
-| No duplicate effects under at-least-once delivery | Conditional claim, `attempt` as a fencing token, request id as the downstream `Idempotency-Key` | `test_stale_attempt_cannot_complete`, `test_duplicate_delivery_processes_once`, `test_client_replay_creates_one_request_and_one_effect` |
-| Failures are classified, retried with backoff, or handed to a human | Retryable vs. permanent errors; equal-jitter backoff with a guaranteed minimum window; `max_attempts`, then `needs_human` | `test_flaky_downstream_is_absorbed_by_retries`, `test_downstream_down_ends_in_needs_human_after_max_attempts` |
-| One tenant cannot hurt the others | Per-tenant token bucket; per-tenant webhook concurrency and claim cap | `test_noisy_tenant_is_limited_without_affecting_others`, `test_webhook_claim_caps_jobs_per_tenant` |
-| Throughput scales by adding workers | Stateless asyncio workers; the queue's prefetch bounds work in flight | Load test: end-to-end p50 drops from 48 s to **1.9 s** going from 1 to 4 workers ([results](loadtest/results/README.md)) |
-| Operators see trouble before tenants do | Metrics, JSON logs, readiness, alert rules; key signal: **age of the oldest unfinished request** | `test_dispatcher_gauges_reflect_the_database`, [`docs/alerts.yml`](docs/alerts.yml) |
+**Contents:**
+[Quick start](#quick-start) ·
+[How it works](#how-it-works) ·
+[Guarantees](#guarantees) ·
+[Failure handling](#failure-handling) ·
+[API](#api) ·
+[Operations](#operations) ·
+[Performance](#performance) ·
+[Testing](#testing) ·
+[Design decisions](#design-decisions) ·
+[Limitations](#limitations-and-next-steps) ·
+[Development](#development)
 
-**Test counts:** 153 unit tests. 41 integration tests against the running stack, 6 of them failure scenarios. CI runs both suites on every PR.
+## Quick start
 
-## Try it (about 2 minutes)
+Requires Docker and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-make up                                   # api :8080, worker, dispatcher, downstream-mock :8081, postgres, rabbitmq
+make up            # api :8080, workers, dispatcher, downstream mock :8081, Postgres, RabbitMQ
+
 curl -s -X POST localhost:8080/v1/requests \
   -H 'Authorization: Bearer demo-key-a' -H 'Idempotency-Key: demo-1' \
   -H 'content-type: application/json' -d '{"type": "guest.register", "data": {"name": "Ana"}}'
-# → 202 {"id": "…", "status": "received", "status_url": "/v1/requests/…"}
-curl -s localhost:8080/v1/requests/<id> -H 'Authorization: Bearer demo-key-a'   # → "status": "done"
-make test-integration                     # end-to-end and failure scenarios (≈1.5 min)
-docker compose exec dispatcher python -m pipeline replay   # operator: resume needs_human after a fix
-make load WORKERS=4 USERS=300             # load run with a markdown report
+# 202 {"id": "<id>", "status": "received", "status_url": "/v1/requests/<id>"}
+
+curl -s localhost:8080/v1/requests/<id> -H 'Authorization: Bearer demo-key-a'
+# {"status": "done", "result": {...}, ...}
+
+make down          # stop and delete data
 ```
 
-**Demo tenants.** These are test keys from [`migrations/002_demo_tenants.sql`](migrations/002_demo_tenants.sql):
+The demo tenants use test keys defined in [`migrations/002_demo_tenants.sql`](migrations/002_demo_tenants.sql):
 
-| Key | Tenant behaviour |
+| Key | Behaviour |
 |---|---|
-| `demo-key-a` | Has a webhook |
+| `demo-key-a` | Receives webhooks |
 | `demo-key-b` | Polls for results |
-| `demo-key-noisy` | Limited to 5 requests/s |
+| `demo-key-noisy` | Rate-limited to 5 requests/s |
 
-**Faults.** You can inject them at runtime:
-
-```bash
-curl -X PUT localhost:8081/admin/config -H 'content-type: application/json' -d '{"fail_first": 2}'
-```
-
-## Architecture
+## How it works
 
 ```mermaid
-flowchart TB
-  client(["Tenant client"])
-  api["api (2 processes)<br/>auth · rate limit · load shedding · idempotent insert"]
-  pg[("Postgres<br/>requests = source of truth + outbox")]
-  mq[["RabbitMQ quorum queue<br/>message = request id"]]
-  dlq[["requests.dead"]]
-  w["worker × N<br/>asyncio · prefetch 50"]
-  ds["downstream service (mock)"]
-  d["dispatcher × N<br/>sweeper · webhooks · gauges"]
-  client -->|"POST → 202 {id}"| api
-  client -->|"GET /v1/requests/{id}"| api
-  api -->|"1 insert"| pg
-  api -->|"publish id (confirm)"| mq
-  mq -->|deliver| w
-  mq -.->|poison| dlq
-  w -->|"claim · fenced complete"| pg
-  w -->|"POST, Idempotency-Key"| ds
-  d -->|"SKIP LOCKED"| pg
-  d -->|"re-publish"| mq
-  d -->|"signed webhook"| client
+flowchart LR
+  client(["Tenant"])
+  api["API<br/>auth · limits · idempotent insert"]
+  pg[("Postgres<br/>request state + outbox")]
+  mq[["RabbitMQ<br/>request ids"]]
+  w["Workers × N"]
+  ds["Downstream"]
+  d["Dispatcher<br/>sweeper · webhooks"]
+  client -->|"POST → 202"| api
+  api --> pg
+  api -->|publish id| mq
+  mq --> w
+  w -->|"claim · complete"| pg
+  w -->|process| ds
+  d -->|"due / lost / expired"| pg
+  d -->|re-publish| mq
+  d -->|signed webhook| client
 ```
+
+| Component | Responsibility |
+|---|---|
+| **API** | Authenticates the tenant and applies per-tenant rate limits and queue-depth load shedding. Stores the request idempotently, then publishes its id |
+| **Postgres** | The source of truth for every request's state. It also serves as the webhook outbox |
+| **RabbitMQ** | Distributes request ids to workers. A message is only a hint that there may be work: losing or duplicating one is harmless |
+| **Workers** | Stateless. Each one claims a request, calls the downstream, classifies the outcome and records it |
+| **Dispatcher** | Re-publishes requests whose retry is due, whose message was lost, or whose worker died. Delivers webhooks and refreshes health gauges |
+
+### Request lifecycle
 
 ```mermaid
 stateDiagram-v2
@@ -79,139 +92,189 @@ stateDiagram-v2
   processing --> processing: lease expired
   processing --> done
   processing --> failed: permanent error
-  processing --> retry_scheduled: retryable, attempts left
+  processing --> retry_scheduled: retryable error
   processing --> needs_human: attempts exhausted
   needs_human --> retry_scheduled: operator replay
 ```
 
-There is no `queued` state. `received` means "accepted, maybe published", and duplicate publishes are harmless. Dropping the state saves one write per request.
+All transitions are defined in one place: [`domain/request.py`](src/pipeline/domain/request.py).
 
-## What happens after a worker takes a request
+### Processing one request
 
-This is [`worker/handler.py`](src/pipeline/worker/handler.py). It is transport-agnostic and is driven by [`consumer.py`](src/pipeline/worker/consumer.py).
+[`worker/handler.py`](src/pipeline/worker/handler.py) handles one request in these steps:
 
-1. **Deliver.** The message body is only the request id. Prefetch (50) bounds concurrency per process.
-2. **Claim.** One `UPDATE … RETURNING`:
-   - sets `processing`, `attempt + 1` and `locked_until = now() + lease`;
-   - only if the row is `received`, a *due* retry, or holds an expired lease.
+1. **Claim.** A single conditional update moves the request to `processing` under a time-limited lease. It succeeds only if the request is new, its retry is due, or its previous lease has expired. Otherwise the delivery is a duplicate and is skipped.
+2. **Process.** Call the downstream under a timeout, with the request id as the idempotency key. A repeat after a crash then returns the original result instead of a second effect.
+3. **Classify.**
+   - Timeouts, connection errors, `429` and `5xx` are retryable.
+   - Other `4xx` are permanent.
+   - Unknown errors are retryable, within the attempt limit.
+4. **Record.** The outcome is written only if this worker still holds the lease. The attempt number serves as a fencing token, so a stalled worker cannot overwrite a newer result. A final state arms the webhook in the same statement.
+5. **Acknowledge** the message whatever happened. Postgres holds the state, and the dispatcher repairs anything a lost step leaves behind.
 
-   Zero rows means the request is already final or another worker holds it. Ack and stop.
-3. **Crash-loop guard.** If the attempt in this round (`attempt − attempt_offset`) is above `max_attempts`, the previous attempts died mid-way. Go to `needs_human` without processing again.
-4. **Process.** Call the downstream under a timeout, with `Idempotency-Key = request id`.
-5. **Classify.**
+Retries use exponential backoff with equal jitter. Delays are spread out, but a minimum retry window is guaranteed. After `max_attempts` the request moves to `needs_human`. If a worker dies on the same request again and again, a crash-loop guard stops it from being processed a further time.
 
-   | Result | Classification |
-   |---|---|
-   | timeout, connection error, 429, 5xx | retryable |
-   | other 4xx, non-JSON body | permanent |
-   | unknown exception | retryable, bounded by `max_attempts`, with the text kept for a human |
+## Guarantees
 
-6. **Decide.** [`domain/request.py`](src/pipeline/domain/request.py) owns every transition: `done`, `failed`, `retry_scheduled(next_attempt_at)` or `needs_human`.
-7. **Complete, fenced.** The write applies only if `status = processing AND attempt = n`, so a stale worker cannot overwrite a newer one. For final states, the same statement sets the webhook outbox flag.
-8. **Ack, always.** The row is the truth. If anything above failed (for example the DB was down), the sweeper repairs it. A nack-requeue would spin hot instead.
-9. **Shutdown.** On SIGTERM: stop consuming, drain in-flight work for 25 s, then cancel the rest. Unacked messages are redelivered.
-
-## Failure modes
-
-| What breaks | What the system does | Test |
+| Guarantee | Mechanism | Verified by |
 |---|---|---|
-| Publish fails after the insert (broker down) | Client still gets `202`. Sweeper re-publishes once the broker is back | `test_broker_down_at_intake_is_recovered_without_client_retry` |
-| Worker killed mid-request | Lease expires, sweeper re-publishes, attempt 2 finishes with the same idempotency key | `test_worker_killed_mid_processing_still_finishes` |
-| Downstream flaky | Backoff retries until `done` | `test_flaky_downstream_is_absorbed_by_retries` |
-| Downstream down | `needs_human` after exactly `max_attempts` calls; metric and alert | `test_downstream_down_ends_in_needs_human_after_max_attempts` |
-| Stale worker finishes late | Fenced write dropped (`LEASE_LOST`) | `test_stale_worker_cannot_overwrite_after_losing_lease`, `test_stale_attempt_cannot_complete` |
-| Duplicate message for a scheduled retry | Not claimable until due, so the backoff is not skipped | `test_retry_not_yet_due_is_skipped`, `test_retry_not_yet_due_is_not_claimable` |
-| Client retries a POST | Same id; a different body with the same key → `422` | `test_client_replay_creates_one_request_and_one_effect`, `test_same_key_different_body_is_rejected` |
-| Downstream fixed after requests went to `needs_human` | `python -m pipeline replay` gives them a fresh retry budget; `attempt` keeps counting, so it stays a valid fencing token | `test_operator_replay_resumes_needs_human_after_the_fix`, `test_replayed_request_gets_a_full_retry_budget` |
-| Malformed body (invalid JSON, array, empty, deep nesting, NUL, unknown field, over-long key) | `422` with a JSON detail; the connection stays usable | `test_malformed_input_never_breaks_the_connection` |
-| Postgres unreachable at intake | `503 + Retry-After`; `/readyz` fails; in-flight requests finish after recovery (deliveries are acked, the sweeper repairs) | `test_store_unavailable_is_a_503_with_retry_after` |
-| Unparseable message | Rejected to `requests.dead`; metric and alert | `test_rejected_message_goes_to_dead_letter_queue`, `test_unparseable_body_is_rejected_to_dead_letter` |
-| Backlog grows | `503 + Retry-After` above a queue-depth threshold; fails open if the depth is unknown | `test_deep_queue_sheds_load_before_writing`, `test_shedder_fails_open_when_broker_hangs` |
-| Tenant webhook endpoint hangs | At most 4 deliveries in flight per tenant; new jobs are claimed only for tenants with a free slot, so others are unaffected | `test_per_tenant_concurrency_is_capped`, `test_slow_tenant_does_not_hold_back_a_fast_one` |
+| Every accepted request reaches a final state | State in Postgres; the dispatcher re-publishes due, lost and abandoned work | Integration tests; failure scenarios; chaos campaign (invariant I1) |
+| At most one effect per request | Conditional claim, fenced completion, downstream idempotency key | Property-based tests; chaos campaign (I2) |
+| Bounded retries with a minimum window | Equal-jitter backoff, attempt limit, `needs_human` with operator replay | Unit and property tests; failure scenarios |
+| Tenant isolation | Per-tenant token bucket at intake; per-tenant webhook concurrency | Unit tests; webhook isolation tests |
+| Overload stays predictable | `503 + Retry-After` above a queue-depth threshold, before anything is written | Unit tests; load runs |
+| Malformed input never breaks the service | Every invalid body or header gets a JSON `4xx` | Unit and integration tests |
 
-## Decisions and the options considered
+## Failure handling
 
-| Decision | Chosen | Alternatives | ADR |
-|---|---|---|---|
-| Where state lives | Postgres row; the message carries only the id | Queue as truth, Kafka log | [0001](docs/adr/0001-postgres-is-the-source-of-truth.md) |
-| Queue | RabbitMQ quorum queue, confirms, DLX | SQS, Kafka, Postgres `SKIP LOCKED` | [0002](docs/adr/0002-rabbitmq-quorum-queue.md) |
-| Exactly-once *effect* | Lease + fencing token + downstream idempotency key | Dedupe table, Redis lock | [0003](docs/adr/0003-claim-with-lease-and-fencing.md) |
-| Retries and recovery | Scheduled in the DB, one sweeper | In-request 1-2-4-8 s, broker delay queues | [0004](docs/adr/0004-retries-in-the-database-and-a-sweeper.md) |
-| Answering the client | `202` + polling + signed webhooks from a table outbox | Synchronous, polling only | [0005](docs/adr/0005-async-accept-polling-and-signed-webhooks.md) |
-| Intake protection | Per-process token bucket, queue-depth shedding | Redis, API gateway | [0006](docs/adr/0006-intake-protection-per-replica.md) |
-| Concurrency model | One asyncio process per container; scale by containers | Threads, a process pool | [0007](docs/adr/0007-one-asyncio-process-per-container.md) |
+| Failure | Behaviour |
+|---|---|
+| Broker unavailable at intake | The request is stored and still accepted. The dispatcher publishes it once the broker is back |
+| Database unavailable at intake | `503 + Retry-After`, and readiness fails. Clients retry with the same idempotency key |
+| Worker crashes or freezes mid-request | The lease expires and another worker re-claims the request. A frozen worker that later resumes is fenced off |
+| Duplicate or redelivered message | The claim lets only one through. A scheduled retry cannot start before it is due |
+| Downstream slow, failing or down | Timeout, then backoff retries, then `needs_human` with an alert. Once the downstream is fixed, an operator replays the requests |
+| Unparseable message | Moved to the dead-letter queue and counted |
+| Tenant webhook endpoint down or slow | Backoff retries. That tenant's slots are occupied, so other tenants are unaffected. Results remain available via `GET` |
+| Backlog grows | Load shedding at intake. Lost-message recovery pauses while the queue is busy, so recovery does not add duplicates |
 
-## Capacity
+Every row is exercised by a test: see [`tests/integration/test_failures.py`](tests/integration/test_failures.py) and the [chaos campaign](#testing).
 
-1M requests/hour is about 280 rps on average, and up to about 1.4k rps at a ×5 peak. Laptop runs (Docker with 4 vCPU shared by everything) are in [`loadtest/results`](loadtest/results/README.md):
+## API
 
-| Workers | Offered | Intake rps | Done/s | End-to-end p50 | Lost |
+| Endpoint | Description |
+|---|---|
+| `POST /v1/requests` | Submit `{"type": str, "data": object}`. The `Idempotency-Key` header is required |
+| `GET /v1/requests/{id}` | Status, attempt, result and last error. A tenant sees only its own requests |
+| `GET /healthz`, `GET /readyz` | Liveness, and readiness with a per-dependency check |
+| `GET /metrics` | Prometheus metrics |
+
+| `POST` response | Meaning |
+|---|---|
+| `202` | Accepted. A repeat with the same key and body returns the same id, with `Idempotent-Replayed: true` |
+| `400` / `422` | Missing key, invalid body, or the same key reused with a different body |
+| `401` | Unknown API key |
+| `413` | Body larger than 64 KB |
+| `429` / `503` | Rate-limited, overloaded or temporarily unavailable. Retry after `Retry-After` |
+
+**Webhooks.** A webhook is a `POST` of `{id, status, result, error, attempt}` with these headers:
+- `X-Signature: sha256=<HMAC of the body with the tenant secret>`
+- `X-Request-Id`, used to deduplicate: delivery is at least once.
+
+## Operations
+
+**Configuration.** All settings are environment variables prefixed `PIPELINE_`, defined in [`config.py`](src/pipeline/config.py). The main ones:
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `WORKER_CONCURRENCY` | 50 | Requests in flight per worker process (the RabbitMQ prefetch) |
+| `PROCESSING_TIMEOUT_S` / `LEASE_S` | 10 / 30 | Downstream call timeout / claim lease. Startup fails unless the lease exceeds the worst-case attempt |
+| `MAX_ATTEMPTS`, `RETRY_BASE_S`, `RETRY_MAX_S` | 5, 1, 60 | Retry budget and backoff |
+| `STALE_AFTER_S` | 60 | How long before an unclaimed request counts as a lost message |
+| `MAX_QUEUE_DEPTH` | 200 000 | Load-shedding threshold |
+| `WEBHOOK_MAX_ATTEMPTS`, `WEBHOOK_PER_TENANT_CONCURRENCY` | 8, 4 | Webhook retry budget and isolation |
+
+**Observability.**
+- JSON logs carry the `request_id`.
+- Prometheus metrics are defined in [`observability.py`](src/pipeline/observability.py). Labels are bounded, so tenant ids never become labels.
+- The primary health signal is **`pipeline_oldest_unfinished_seconds`**. It rises whenever any part of the pipeline stops making progress, regardless of traffic volume.
+- Alert rules are in [`docs/alerts.yml`](docs/alerts.yml).
+
+**Runbook.**
+
+| Situation | Action |
+|---|---|
+| `RequestsWaitingForHuman` fires | Fix the cause (usually the downstream), then run `docker compose exec dispatcher python -m pipeline replay [--id <id>]`. Replayed requests get a fresh retry budget |
+| Backlog grows, or `IntakeShedding` fires | Add workers: `make scale N=<n>`. Throughput scales with worker processes |
+| A component restarts | No action. In-flight work is re-claimed after its lease expires |
+
+## Performance
+
+Measured on a laptop: Docker with 4 vCPU shared by every service and the load generator. Details are in [`loadtest/results`](loadtest/results/README.md).
+
+| Workers | Offered | Accepted | Processed | End-to-end p50 | Lost |
 |---|---|---|---|---|---|
-| 1 | ~300 rps | 267 | 121 | 48 s | 0 |
-| 4 | ~300 rps | 173 | 144 | **1.9 s** | 0 |
-| 4 | ~900 rps | 168 | 136 | 20 s | 0 |
+| 1 | ~300 rps | 267 rps | 121/s | 48 s | 0 |
+| 4 | ~300 rps | 173 rps | 144/s | 1.9 s | 0 |
 
-What the runs show:
+- A worker process is **CPU-bound at about 120 requests/s**. It is not I/O-bound, so the system scales by processes (containers), not threads ([ADR-0007](docs/adr/0007-one-asyncio-process-per-container.md)).
+- 1M requests/hour (~280/s) needs about three worker cores. The ×5 peak needs about twelve. This is extrapolated from the measured per-core cost.
 
-- **A worker process is CPU-bound at about 120 req/s.** The prediction was ~250 req/s, assuming the work is I/O-bound. In fact the per-request CPU cost (drivers, HTTP client, JSON logs) dominates. This is the GIL limit of one process, so the system scales by processes (containers), not threads.
-- **Sizing.** 1M/h needs about 3 worker cores, and the ×5 peak about 12, before any optimisation.
-- **The load test found a design flaw.** Under backlog, the sweeper re-published queued requests as "lost": 131k duplicates in one minute, which fed the backlog. Lost-message recovery now runs only while the queue is nearly empty ([ADR-0004](docs/adr/0004-retries-in-the-database-and-a-sweeper.md)).
+## Testing
 
-## Observability
+| Layer | What it covers | Command |
+|---|---|---|
+| Unit | Domain rules, the worker flow, API behaviour and the dispatcher, all on in-memory fakes | `make check` (also lint and docstrings) |
+| Property-based | Random interleavings of duplicates, crashes, lease expiries, frozen workers and replays. Safety and liveness are checked after every step | part of `make check` (3000 examples in CI) |
+| Integration | The real SQL, broker and API against the running stack, plus six failure scenarios | `make test-integration` |
+| Chaos campaign | Random faults in every component under steady load, then the invariants I1 to I6 ([`tests/invariants.py`](tests/invariants.py)) | `make chaos-campaign` |
+| Load | Throughput and latency for 1 and 4 workers | `make load WORKERS=4 USERS=300` |
 
-- **Metrics.** Defined once in [`observability.py`](src/pipeline/observability.py). Labels are bounded; tenant ids go to logs only.
+CI runs the unit, property and integration layers on every pull request.
 
-  | Component | Metrics |
-  |---|---|
-  | Intake | outcomes, latency |
-  | Worker | handled by result, attempt time, in flight |
-  | Dispatcher | re-publishes, webhooks; gauges for `needs_human`, the **oldest unfinished request**, pending webhooks and queue depth |
+The deeper layers found real defects that example tests missed. Each now has a regression test:
+- under a backlog, the sweeper re-published queued requests as "lost";
+- webhook delivery was capped at about 8 per second per tenant;
+- random backoff could spend every retry within about two seconds;
+- malformed input produced `500` errors.
 
-- **Logs.** JSON lines with `request_id`.
-- **Health.** `/healthz` for liveness, `/readyz` for readiness with per-dependency checks.
-- **Alerts.** Six rules in [`docs/alerts.yml`](docs/alerts.yml). Each names the symptom and the first thing to check.
+## Design decisions
 
-## Next steps for production
+| Decision | Choice | ADR |
+|---|---|---|
+| Where state lives | The Postgres row; the message carries only the id | [0001](docs/adr/0001-postgres-is-the-source-of-truth.md) |
+| Queue | RabbitMQ quorum queue with publisher confirms and a dead-letter queue | [0002](docs/adr/0002-rabbitmq-quorum-queue.md) |
+| At most one effect | Lease, fencing token and downstream idempotency key | [0003](docs/adr/0003-claim-with-lease-and-fencing.md) |
+| Retries and recovery | Scheduled in the database; one sweeper | [0004](docs/adr/0004-retries-in-the-database-and-a-sweeper.md) |
+| Answering the client | `202`, then polling or signed webhooks from a table outbox | [0005](docs/adr/0005-async-accept-polling-and-signed-webhooks.md) |
+| Intake protection | Per-process token bucket and queue-depth shedding | [0006](docs/adr/0006-intake-protection-per-replica.md) |
+| Concurrency | One asyncio process per container; scale by containers | [0007](docs/adr/0007-one-asyncio-process-per-container.md) |
 
-This is a prototype with its core guarantees proved, not a production system. In order of what blocks production first:
+## Limitations and next steps
 
-1. **Schema migrations.** The schema is applied by `docker-entrypoint-initdb.d`, so it only reaches an empty database. A migration tool (Alembic or sqitch) has to come before the first schema change on live data.
-2. **The failure and load tests that are still missing.**
-   - Postgres failover (a restart under load is covered by the chaos campaign).
-   - A soak run of several hours, to show memory growth and table growth.
+This is a prototype with its core guarantees verified, not a production deployment. In priority order, the remaining work is:
+
+1. **Schema migrations.** The schema is applied only to an empty database. A migration tool is needed before the first change on live data.
+2. **Verification at scale.**
+   - Soak runs of several hours.
+   - Postgres failover.
    - Several dispatcher and API replicas at once.
-   - Load runs on real infrastructure: the laptop runs are 60 s on 4 shared vCPU, and the API's p95 target is not met there.
-3. **Postgres.** HA (Patroni or managed), partition `requests` by day, retention and archiving.
-4. **RabbitMQ and deployment.** A 3-node cluster for the quorum queue. KEDA scaling workers on queue depth and on the oldest-unfinished age. Kubernetes manifests, secrets management, dashboards, and alert rules checked in a real Prometheus.
-5. **Fair scheduling.** Weighted fair queues per tenant at processing time (only intake is per-tenant today). Tenant rate limits move to the gateway.
-6. **Downstream.** A circuit breaker per downstream, so a dead dependency stops burning attempts.
-7. **Security and compliance.** OAuth client credentials instead of static keys, TLS, demo keys out of the migrations, a replay-protection timestamp in webhook signatures, PII encryption and GDPR retention for payloads.
+   - Load on real infrastructure.
+3. **High availability.**
+   - A managed or Patroni Postgres, with the `requests` table partitioned and a retention policy.
+   - A three-node RabbitMQ cluster.
+   - Autoscaling workers on queue depth and request age.
+4. **Fairness.**
+   - Per-tenant fair scheduling at processing time; today only intake is per-tenant.
+   - A global rate limiter, because the current one counts per API process.
+5. **Security and compliance.**
+   - OAuth client credentials and TLS.
+   - Replay-protected webhook signatures.
+   - Encryption and retention for personal data.
 
-## How this was built
+## Development
 
-The work follows an AI-native SDLC loop. Everything is in the repo:
-
-- [`docs/sdlc/intent.md`](docs/sdlc/intent.md) → [`spec.md`](docs/sdlc/spec.md) → [`roadmap.md`](docs/sdlc/roadmap.md) (T0–T10).
-- **One task = one plan = one PR.** Each plan in [`docs/tasks/`](docs/tasks) lists the files that change, the order of work, the risks and the proof.
-- **Tests first** where the code is pure. `make check` is the single definition of "done".
-- **Review.** A fresh-context verifier agent ([`.claude/agents/verifier.md`](.claude/agents/verifier.md), [`scripts/verify.sh`](scripts/verify.sh)) checks every PR against its plan and [`REVIEW.md`](REVIEW.md). Its findings and fixes are on each PR. Real bugs it caught:
-  - a duplicate message could skip a retry's backoff;
-  - the request body was read into memory before the size check;
-  - a single hanging tenant endpoint could stall every webhook for about 10 minutes;
-  - a gauge test passed on default zeros.
-- **Lessons.** Mistakes that happen twice go into [`AGENTS.md`](AGENTS.md) under "Things Claude gets wrong".
-- **Diagrams.** [`docs/architecture.html`](docs/architecture.html) holds the target architecture and an as-built comparison.
-
-## Repository map
-
+```bash
+uv sync && make check     # lint, docstrings, unit and property tests
+make up && make test-integration
 ```
-src/pipeline/domain/        state machine, retry policy, errors (pure)
-src/pipeline/ports.py       small Protocols the core depends on
-src/pipeline/worker/        handler (the core) and RabbitMQ consumer
-src/pipeline/api/           intake API, auth cache, rate limit, load shedding
-src/pipeline/dispatcher/    sweeper, webhook sender, health gauges
-src/pipeline/adapters/      asyncpg, aio-pika, httpx implementations
-src/pipeline/main.py        composition root
-mock_downstream/            fake external service + webhook sink, faults at runtime
-migrations/  tests/unit  tests/integration  loadtest/  docs/adr  docs/tasks  docs/sdlc
-```
+
+| Path | Contents |
+|---|---|
+| `src/pipeline/domain/` | Lifecycle rules, retry policy, errors (pure, no I/O) |
+| `src/pipeline/worker/` | Request handler and queue consumer |
+| `src/pipeline/api/` | Intake API, authentication, rate limiting, load shedding |
+| `src/pipeline/dispatcher/` | Sweeper, webhook sender, health gauges |
+| `src/pipeline/adapters/` | Postgres, RabbitMQ and HTTP implementations of the interfaces in `ports.py` |
+| `src/pipeline/main.py` | Wiring of services; `python -m pipeline {worker, dispatcher, replay}` |
+| `mock_downstream/` | Downstream and webhook sink with runtime fault injection |
+| `tests/`, `loadtest/` | Test layers above; load and chaos tooling |
+| `docs/` | Specification, decisions, task plans, alert rules |
+
+Each change follows the same loop:
+1. A [specification](docs/sdlc/spec.md) and a [roadmap](docs/sdlc/roadmap.md).
+2. A written plan per task in [`docs/tasks/`](docs/tasks).
+3. Tests first.
+4. Review by a fresh-context verifier agent against [`REVIEW.md`](REVIEW.md).
+
+Contributor and agent conventions are in [`AGENTS.md`](AGENTS.md).
