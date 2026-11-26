@@ -51,10 +51,12 @@ If the implementation diverges from the task plan, update the plan in the same c
 
 ## Verifying your work
 
-Do not report a task done without pasting the tail of `make check` output (and `make test-integration` when the
-task touches Docker services) into the PR under "How checked".
+Required CI checks (`check`, `integration`) must be green before merge: they are the evidence for `make check` and
+`make test-integration`. In "How checked", paste verbatim only what CI does not run (load runs, manual steps), plus
+the verifier verdict. Never chain a commit after a check with `;`; use `&&`, so a failed check stops the commit.
 
 ## Things Claude gets wrong
 
+- Committed after a failed check (T7): `make check ...; git commit` ran the commit anyway. Chain with `&&`.
 - Plan drift (T0, T1): a commit changed files or settings its task plan did not list. Before committing, diff the
   plan's "Files that change" against `git status` and update the plan in the same commit.
