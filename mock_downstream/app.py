@@ -10,6 +10,7 @@ POST /admin/reset        clear counters and stores
 
 import asyncio
 import random
+import uuid
 from typing import Any
 
 from fastapi import FastAPI, Header, Request, Response
@@ -34,6 +35,7 @@ stats = {"calls": 0, "successes": 0, "duplicate_calls_after_success": 0, "errors
 webhooks: list[dict[str, Any]] = []
 locks: dict[str, asyncio.Lock] = {}
 calls_per_key: dict[str, int] = {}
+BOOT_ID = str(uuid.uuid4())  # changes if the process restarts: tests can tell lost counters from real behaviour
 
 
 @app.post("/process", response_model=None)
@@ -92,7 +94,7 @@ async def get_stats() -> dict[str, int]:
 @app.get("/admin/calls/{key}")
 async def calls_for(key: str) -> dict[str, Any]:
     """How many times one Idempotency-Key was called, and whether it has a stored result."""
-    return {"calls": calls_per_key.get(key, 0), "succeeded": key in results}
+    return {"calls": calls_per_key.get(key, 0), "succeeded": key in results, "boot_id": BOOT_ID}
 
 
 @app.get("/admin/webhooks")
