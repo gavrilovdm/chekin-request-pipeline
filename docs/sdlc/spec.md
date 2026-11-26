@@ -53,7 +53,7 @@ received ──claim──▶ processing ──ok──────────�
 2. **Under backlog the sweeper could re-enqueue duplicates.** The T9 load test confirmed this: 131k duplicates in one run fed the backlog that caused them.
    - Fixed: lost-message recovery runs only when the queue is nearly empty.
    - Due retries and expired leases are never in the queue, so they are always re-published.
-3. **The rate limit is per api replica.** Without shared state it is approximate (limit ÷ replicas). This is accepted for the prototype; see ADR-0006.
+3. **The rate limit is per API process.** Without shared state it is approximate: the effective limit is roughly the configured limit × the number of API processes (2 per replica in compose). This is accepted for the prototype; see ADR-0006.
 4. **A downstream success can be repeated** if a worker dies after the call but before it records the result. This is at-least-once by nature, so the downstream must accept an idempotency key.
 
 ## Out of scope
