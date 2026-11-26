@@ -28,12 +28,3 @@ Each task runs through one AI-native SDLC cycle and lands as one PR:
 | T10 | README, ADRs, as-built architecture vs. target (+ CI integration job) | the architecture page compares target and as-built; gaps fixed or explained | T9 | merged ([#11](https://github.com/gavrilovdm/chekin-request-pipeline/pull/11)) |
 | T11 | Edge cases found by probing: API input errors, operator replay for `needs_human`, lease budget, result cap | every malformed input is a 422; replay chaos scenario | T10 | merged ([#17](https://github.com/gavrilovdm/chekin-request-pipeline/pull/17)) |
 | T12 | Fault campaign: property-based lifecycle tests, invariant checker, chaos under load until 3 clean runs | 3 consecutive clean campaign reports | T11 | merged ([#19](https://github.com/gavrilovdm/chekin-request-pipeline/pull/19)) |
-
-## Schedule
-
-| Day | Tasks |
-|---|---|
-| Thu 26.11 | T0, T1, T2 |
-| Fri 27.11 | T3, T4, T5 |
-| Sat 28.11 | T6, T7, T8 |
-| Sun 29.11 | T9, T10. Review with the user, then make the repo public |

@@ -76,7 +76,7 @@ flowchart TB
   dlq[["requests.dead<br/>poison messages"]]
   w["worker × N<br/>asyncio · prefetch = concurrency"]
   ds["Downstream service<br/>(mock: latency, error rate)"]
-  d["dispatcher × N<br/>sweeper · webhook sender · health gauges"]
+  d["dispatcher × N<br/>sweeper · webhook sender (continuous) · health gauges"]
   obs["Prometheus metrics · JSON logs · alert rules"]
   client -->|"POST /v1/requests → 202 {id}"| api
   client -->|"GET /v1/requests/{id}"| api
@@ -201,6 +201,7 @@ stateDiagram-v2
       <tr><td>T9</td><td>Load test, capacity report</td><td>throughput and p95, 1 vs 4 workers</td><td><span class="chip done">PR #10 · merged</span></td></tr>
       <tr><td>T10</td><td>README, ADRs, as-built comparison</td><td>this page, gaps closed or explained</td><td><span class="chip done">PR #11 · merged</span></td></tr>
       <tr><td>T11</td><td>Edge cases found by probing the live stack</td><td>every malformed input is a 422; replay chaos scenario</td><td><span class="chip done">PR #17 · merged</span></td></tr>
+      <tr><td>T12</td><td>Fault campaign: property tests, invariants, chaos under load</td><td>3 consecutive clean campaigns</td><td><span class="chip done">PR #19 · merged</span></td></tr>
     </tbody>
   </table></div>
 </section>
@@ -221,6 +222,7 @@ stateDiagram-v2
       <tr><td>Capacity: ~250 req/s per worker (I/O-bound)</td><td>Measured ~120 req/s per worker process: CPU-bound. Sizing follows cores: 1M/h ≈ 3 worker cores, peak ≈ 12 (ADR-0007)</td><td><span class="chip gap">assumption corrected</span></td></tr>
       <tr><td>Failure-mode table</td><td>Every row has a passing test; the five chaos scenarios run in CI on every PR</td><td><span class="chip done">proved</span></td></tr>
       <tr><td>Edge cases (probed after T10)</td><td>Malformed input returned 500 or dropped the connection; needs_human had no way out; demo lease shorter than the worst-case attempt. Fixed in T11: always-serialisable 422s, operator replay with an attempt offset, lease validated against processing + 2 × DB timeout</td><td><span class="chip done">changed</span></td></tr>
+      <tr><td>Fault tolerance under load (T12)</td><td>Property-based lifecycle tests plus a chaos campaign with random faults in every component under 40 rps. Found: webhooks capped at ~8/s per tenant, and full jitter that could exhaust retries in ~2 s. Fixed: continuous, tenant-aware webhook delivery and equal-jitter backoff. Three consecutive campaigns ended with 0 invariant violations</td><td><span class="chip done">proved</span></td></tr>
       <tr><td>Out of scope: HA Postgres, RabbitMQ cluster, KEDA, fair queues, circuit breaker, GDPR</td><td>Not built; described as next steps in the README</td><td><span class="chip todo">next</span></td></tr>
     </tbody>
   </table></div>

@@ -34,7 +34,6 @@ A runnable prototype of the processing side. It should show:
 - Thousands of tenants. One noisy tenant must not starve the others.
 - RabbitMQ as the queue (decided in the interview).
 - A prototype for a take-home: it must run with `docker compose up` on a laptop.
-- Due by Sunday 2026-11-29.
 
 ## Open questions (resolved)
 
