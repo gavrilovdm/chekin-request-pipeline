@@ -17,8 +17,12 @@ uv sync                      # install
 make check                   # lint + docs rule + unit tests; the definition of "done" for every task
 uv run pytest tests/unit     # fast tests, no Docker
 make up                      # postgres, rabbitmq, api, worker, dispatcher, downstream-mock
-make test-integration        # end-to-end and failure scenarios against the running stack
-make load                    # locust load test
+make test-integration        # end-to-end and failure scenarios against the running stack (~1 min)
+make test-chaos              # only the five failure scenarios
+make scale N=4               # run 4 workers
+make load WORKERS=4 USERS=300   # locust run + markdown report in loadtest/results/
+make down                    # stop and delete volumes
+scripts/verify.sh docs/tasks/TNN-*.md <branch>   # fresh-context verifier for one task
 ```
 
 ## Structure
@@ -28,9 +32,13 @@ make load                    # locust load test
 - `src/pipeline/worker/handler.py` — claim → process → classify → record. Transport-agnostic.
 - `src/pipeline/api/`, `src/pipeline/dispatcher/`, `src/pipeline/adapters/` — FastAPI, sweeper and webhooks,
   asyncpg / aio-pika / httpx implementations of the ports.
-- `src/pipeline/main.py` — composition root: the only place concrete adapters are wired.
-- `mock_downstream/` — fake external service with tunable latency and error rate.
-- `migrations/`, `docker-compose.yml`, `loadtest/`, `docs/adr/`.
+- `src/pipeline/main.py` — composition root: the only place concrete adapters are wired; `__main__.py` runs
+  `worker` / `dispatcher`; `config.py` — every setting (`PIPELINE_*` env vars).
+- `src/pipeline/observability.py` — logging setup and every Prometheus series; `dispatcher/gauges.py` — health gauges.
+- `mock_downstream/` — fake external service and webhook sink, faults injectable at runtime via `/admin/config`.
+- `migrations/`, `docker-compose.yml` (demo timings: stale_after and lease 15 s), `loadtest/`, `docs/alerts.yml`.
+- `docs/sdlc/` (intent, spec, roadmap), `docs/tasks/` (one plan per task; historical, not updated after merge),
+  `docs/adr/`, `docs/architecture.html` (target vs as-built), `REVIEW.md`, `.claude/agents/verifier.md`.
 
 ## Conventions and pitfalls
 

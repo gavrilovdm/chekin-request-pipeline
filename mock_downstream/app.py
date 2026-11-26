@@ -2,8 +2,9 @@
 
 POST /process            the "external system": honours Idempotency-Key, injects latency and errors
 POST /webhooks/{tenant}  records webhooks the dispatcher sends, with their signature header
-PUT  /admin/config       change latency and error rates on the fly
+PUT  /admin/config       change latency, error rates, "down" and fail_first (first N calls per key fail) on the fly
 GET  /admin/stats        calls, successes, duplicate calls after success
+GET  /admin/calls/{key}  calls and success for one Idempotency-Key, plus this process's boot id
 GET  /admin/webhooks     received webhooks (optionally ?request_id=)
 POST /admin/reset        clear counters and stores
 """
