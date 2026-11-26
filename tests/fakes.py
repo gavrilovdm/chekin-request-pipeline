@@ -79,6 +79,17 @@ class InMemoryRepository:
         return True
 
 
+    async def replay(self, request_id: UUID) -> None:
+        """Operator replay, same as PgOperatorStore: fresh retry budget, monotonic attempt."""
+        row = self.rows[request_id]
+        ensure_transition(row.status, Status.RETRY_SCHEDULED)
+        row.status = Status.RETRY_SCHEDULED
+        row.attempt_offset = row.attempt
+        row.next_attempt_at = self.clock()
+        row.locked_until = None
+        row.history.append(Status.RETRY_SCHEDULED)
+
+
 class ScriptedProcessor:
     """Returns or raises the scripted items in order; an item may be a callable run before returning."""
 
