@@ -149,7 +149,7 @@ async def run_dispatcher(settings: Settings) -> None:
     try:
         await asyncio.gather(
             _every(settings.sweep_interval_s, sweeper.sweep_once, settings.sweep_batch, stop, "sweeper"),
-            _every(settings.sweep_interval_s / 2, sender.send_due_once, settings.sweep_batch, stop, "webhooks"),
+            sender.run(stop, idle_interval=settings.sweep_interval_s / 2),
             _every(10.0, lambda: refresh_gauges(store, publisher.queue_depth), 1, stop, "gauges"),
         )
     finally:

@@ -2,7 +2,7 @@
 
 POST /process            the "external system": honours Idempotency-Key, injects latency and errors
 POST /webhooks/{tenant}  records webhooks the dispatcher sends, with their signature header
-PUT  /admin/config       change latency, error rates, "down" and fail_first (first N calls per key fail) on the fly
+PUT  /admin/config       change latency, error rates, "down", "webhooks_down" and fail_first on the fly
 GET  /admin/stats        calls, successes, duplicate calls after success
 GET  /admin/calls/{key}  calls and success for one Idempotency-Key, plus this process's boot id
 GET  /admin/webhooks     received webhooks (optionally ?request_id=)
@@ -26,6 +26,7 @@ class Config(BaseModel):
     error_rate: float = 0.0  # share of calls answered 503 (retryable)
     permanent_rate: float = 0.0  # share of calls answered 422 (permanent)
     down: bool = False  # answer every call with 503
+    webhooks_down: bool = False  # the webhook sink answers 503 (a tenant endpoint that is down)
     fail_first: int = 0  # each Idempotency-Key gets 503 on its first N calls, then succeeds (deterministic flakiness)
 
 
@@ -66,9 +67,11 @@ async def _attempt(body: dict[str, Any], idempotency_key: str) -> Response | dic
     return result
 
 
-@app.post("/webhooks/{tenant}")
-async def receive_webhook(tenant: str, request: Request) -> dict[str, str]:
+@app.post("/webhooks/{tenant}", response_model=None)
+async def receive_webhook(tenant: str, request: Request) -> Response | dict[str, str]:
     """Record a webhook so tests can check delivery and signature."""
+    if config.webhooks_down:
+        return Response("tenant endpoint down", status_code=503)
     webhooks.append({
         "tenant": tenant,
         "signature": request.headers.get("X-Signature"),

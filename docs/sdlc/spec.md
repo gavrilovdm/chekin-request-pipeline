@@ -60,7 +60,7 @@ received ──claim──▶ processing ──ok──────────�
 ## Out of scope
 
 - Schema migrations tool (the schema only reaches an empty database)
-- Postgres-down, fault-under-load and soak tests
+- Soak tests (hours) and load on real infrastructure
 - HA Postgres and partitioning
 - RabbitMQ cluster
 - KEDA

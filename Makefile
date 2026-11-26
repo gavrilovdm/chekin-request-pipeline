@@ -1,4 +1,4 @@
-.PHONY: check lint test test-integration test-chaos up down scale logs load
+.PHONY: check lint test test-integration test-chaos chaos-campaign up down scale logs load
 
 # One command for "done": lint, docs rule, unit tests. Exits non-zero on any failure.
 check: lint test
@@ -12,6 +12,9 @@ test:
 
 test-integration:
 	uv run pytest tests/integration -q -m integration
+
+chaos-campaign:
+	uv run python loadtest/chaos_campaign.py --run $(or $(RUN),local) --rps $(or $(RPS),40) --minutes $(or $(MIN),4)
 
 test-chaos:
 	uv run pytest tests/integration -q -m chaos

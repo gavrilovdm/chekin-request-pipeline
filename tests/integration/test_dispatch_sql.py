@@ -68,8 +68,8 @@ async def test_webhook_claim_hides_rows_and_records_outcomes(store, pool, dispat
     rid = await new_row(store, pool, status="done", attempt=1, result={"ref": "R"}, webhook_pending=True,
                         webhook_next_at=ago(1))
 
-    jobs = [j for j in await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000) if j.request_id == rid]
-    again = [j for j in await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000) if j.request_id == rid]
+    jobs = [j for j in await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000, []) if j.request_id == rid]
+    again = [j for j in await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000, []) if j.request_id == rid]
 
     assert len(jobs) == 1 and again == []
     job = jobs[0]
@@ -96,11 +96,11 @@ async def test_delivered_clears_the_outbox_flag(store, pool, dispatch):
 
 async def test_webhook_claim_caps_jobs_per_tenant(store, pool, dispatch):
     """A tenant with many due webhooks cannot fill the whole batch (head-of-line blocking)."""
-    await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000)  # flush earlier rows
+    await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000, [])  # flush earlier rows
     ids = [await new_row(store, pool, status="done", attempt=1, webhook_pending=True, webhook_next_at=ago(1))
            for _ in range(6)]
 
-    jobs = [j for j in await dispatch.claim_due(100, timedelta(seconds=60), 2) if j.request_id in ids]
+    jobs = [j for j in await dispatch.claim_due(100, timedelta(seconds=60), 2, []) if j.request_id in ids]
 
     assert len(jobs) == 2
 
@@ -114,3 +114,13 @@ async def test_backlog_mode_skips_lost_message_recovery_but_not_due_work(store, 
 
     assert retry_due in due and lost not in due
     assert lost in await due_ids(dispatch, recover_lost=True)
+
+
+async def test_webhook_claim_skips_saturated_tenants(store, pool, dispatch):
+    await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000, [])  # flush earlier rows
+    rid = await new_row(store, pool, status="done", attempt=1, webhook_pending=True, webhook_next_at=ago(1))
+
+    skipped = [j for j in await dispatch.claim_due(100, timedelta(seconds=60), 4, ["tenant-a"]) if j.request_id == rid]
+    taken = [j for j in await dispatch.claim_due(100, timedelta(seconds=60), 4, []) if j.request_id == rid]
+
+    assert skipped == [] and len(taken) == 1

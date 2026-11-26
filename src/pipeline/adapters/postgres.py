@@ -170,7 +170,7 @@ class PgDispatchStore:
     _CLAIM_WEBHOOKS = """
         WITH candidates AS (
             SELECT id, tenant_id FROM requests
-             WHERE webhook_pending AND webhook_next_at <= now()
+             WHERE webhook_pending AND webhook_next_at <= now() AND tenant_id <> ALL($4::text[])
              ORDER BY webhook_next_at
              LIMIT $1 * 4
                FOR UPDATE SKIP LOCKED
@@ -220,9 +220,11 @@ class PgDispatchStore:
         rows = await self._pool.fetch(self._TAKE_DUE, stale_after, limit, recover_lost)
         return [(row["id"], row["status"]) for row in rows]
 
-    async def claim_due(self, limit: int, visibility: timedelta, per_tenant: int) -> list[WebhookJob]:
-        """Webhooks due now (at most ``per_tenant`` each), hidden from other senders for ``visibility``."""
-        rows = await self._pool.fetch(self._CLAIM_WEBHOOKS, limit, visibility, per_tenant)
+    async def claim_due(
+        self, limit: int, visibility: timedelta, per_tenant: int, exclude_tenants: list[str]
+    ) -> list[WebhookJob]:
+        """Webhooks due now (at most ``per_tenant`` each, none for saturated tenants), hidden for ``visibility``."""
+        rows = await self._pool.fetch(self._CLAIM_WEBHOOKS, limit, visibility, per_tenant, exclude_tenants)
         return [
             WebhookJob(r["id"], r["tenant_id"], r["webhook_url"], r["webhook_secret"], r["status"], r["result"],
                        r["last_error"], r["attempt"], r["webhook_attempt"])

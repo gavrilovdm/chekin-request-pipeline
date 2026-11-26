@@ -141,13 +141,13 @@ def test_backoff_ceiling_doubles_and_caps(attempt, ceiling):
     policy = RetryPolicy(max_attempts=50, base_delay=1.0, max_delay=60.0)
     assert policy.ceiling(attempt) == ceiling
     assert policy.delay(attempt, rand=always(1.0)) == timedelta(seconds=ceiling)
-    assert policy.delay(attempt, rand=always(0.0)) == timedelta(0)
+    assert policy.delay(attempt, rand=always(0.0)) == timedelta(seconds=ceiling / 2)  # equal jitter: never ~0
 
 
 def test_default_jitter_stays_in_range():
     policy = RetryPolicy(max_attempts=10, base_delay=1.0, max_delay=60.0)
     delays = {policy.delay(4) for _ in range(200)}
-    assert all(timedelta(0) <= d <= timedelta(seconds=8) for d in delays)
+    assert all(timedelta(seconds=4) <= d <= timedelta(seconds=8) for d in delays)
     assert len(delays) > 1  # actually jittered
 
 
@@ -161,3 +161,12 @@ def test_policy_rejects_nonsense(kwargs):
 def test_an_attempt_cannot_end_in_a_non_final_waiting_state(status):
     with pytest.raises(IllegalTransition):
         Transition(status)
+
+
+def test_retry_window_has_a_guaranteed_minimum():
+    """T12: with full jitter all attempts could land within ~2 s and a short blip exhausted the budget.
+    Equal jitter guarantees at least half of the sum of the ceilings before giving up."""
+    policy = RetryPolicy(max_attempts=5, base_delay=1.0, max_delay=60.0)
+    shortest = sum(policy.delay(n, rand=always(0.0)).total_seconds() for n in range(1, policy.max_attempts))
+
+    assert shortest == 7.5  # 0.5 + 1 + 2 + 4 seconds

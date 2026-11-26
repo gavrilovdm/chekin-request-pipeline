@@ -49,3 +49,17 @@ The task is done when the campaign passes **3 consecutive runs** with zero invar
 - `make check` passes, including the property tests.
 - 3 consecutive campaign reports with zero violations are committed.
 - Every bug found has a regression test and a line in this plan.
+
+## What the campaign found
+
+| Found by | Finding | Fix and regression test |
+|---|---|---|
+| Property tests | None in the code. The first version of the test itself was too weak: all five injected mutations passed | Safety invariants added (claim under a live lease, retry before due, stale or other-round writer); `test_zombie_from_before_a_replay_cannot_complete_the_new_round` |
+| Campaigns 1, 3 | Webhooks capped at ~8/s per tenant | `WebhookSender.run`: continuous, tenant-aware claims (`exclude_tenants`); `test_healthy_tenant_throughput_is_not_capped_by_the_idle_interval`, `test_slow_tenant_does_not_hold_back_a_fast_one`, `test_webhook_claim_skips_saturated_tenants` |
+| Campaign 2 | Harness: restart command failed for non-worker services | `kill_restart` scales only the worker |
+| Campaign 4 | Queue check not eventual | I5 polls for 60 s |
+| Campaigns 6, 7 | Full jitter made the retry window random and sometimes ~2 s | Equal jitter in `RetryPolicy`; `test_retry_window_has_a_guaranteed_minimum` |
+
+The campaigns ran with the docs-check hook live. It flagged 10 missing docstrings in the new campaign script, which were fixed before committing.
+
+Result: campaigns 8, 9 and 10 passed in a row with 0 violations. Reports are in `loadtest/results/`.

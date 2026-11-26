@@ -86,9 +86,17 @@ class FakeWebhookStore:
         self.delivered = []
         self.failed = []  # (id, next_at)
 
-    async def claim_due(self, limit, visibility, per_tenant):
-        jobs, self.jobs = self.jobs[:limit], self.jobs[limit:]
-        return jobs
+    async def claim_due(self, limit, visibility, per_tenant, exclude_tenants):
+        taken, kept, per = [], [], {}
+        for job in self.jobs:
+            n = per.get(job.tenant_id, 0)
+            if len(taken) < limit and job.tenant_id not in exclude_tenants and n < per_tenant:
+                taken.append(job)
+                per[job.tenant_id] = n + 1
+            else:
+                kept.append(job)
+        self.jobs = kept
+        return taken
 
     async def mark_delivered(self, request_id, webhook_attempt):
         self.delivered.append(request_id)
@@ -120,7 +128,9 @@ async def test_webhook_is_signed_and_marked_delivered():
     j = job()
     store = FakeWebhookStore([j])
 
-    await sender(store, handler).send_due_once()
+    s = sender(store, handler)
+    await s.send_due_once()
+    await s.wait_idle()
 
     expected = "sha256=" + hmac.new(b"s3cret", seen["body"], hashlib.sha256).hexdigest()
     assert seen["sig"] == expected == sign("s3cret", seen["body"])
@@ -134,7 +144,9 @@ async def test_failed_delivery_backs_off():
     clock = FakeClock()
     store = FakeWebhookStore([job(webhook_attempt=0)])
 
-    await sender(store, lambda r: httpx.Response(500), clock=clock).send_due_once()
+    s = sender(store, lambda r: httpx.Response(500), clock=clock)
+    await s.send_due_once()
+    await s.wait_idle()
 
     (_, next_at), = store.failed
     assert clock.now <= next_at <= clock.now + timedelta(seconds=1)
@@ -145,7 +157,9 @@ async def test_unreachable_endpoint_counts_as_failure():
         raise httpx.ConnectError("refused")
 
     store = FakeWebhookStore([job()])
-    await sender(store, handler).send_due_once()
+    s = sender(store, handler)
+    await s.send_due_once()
+    await s.wait_idle()
 
     assert len(store.failed) == 1 and store.failed[0][1] is not None
 
@@ -153,7 +167,9 @@ async def test_unreachable_endpoint_counts_as_failure():
 async def test_malformed_url_is_a_counted_failure_not_a_crash():
     store = FakeWebhookStore([WebhookJob(uuid4(), "t", "http://[::1", "s", "done", {}, None, 1, 0)])
 
-    await sender(store, lambda r: httpx.Response(200)).send_due_once()
+    s = sender(store, lambda r: httpx.Response(200))
+    await s.send_due_once()
+    await s.wait_idle()
 
     assert len(store.failed) == 1
 
@@ -169,7 +185,9 @@ def test_visibility_must_exceed_timeout():
 async def test_last_attempt_gives_up():
     store = FakeWebhookStore([job(webhook_attempt=2)])
 
-    await sender(store, lambda r: httpx.Response(503), max_attempts=3).send_due_once()
+    s = sender(store, lambda r: httpx.Response(503), max_attempts=3)
+    await s.send_due_once()
+    await s.wait_idle()
 
     assert store.failed[0][1] is None  # webhook_status = failed
 
@@ -188,7 +206,54 @@ async def test_per_tenant_concurrency_is_capped():
     jobs = [job(tenant="slow") for _ in range(10)] + [job(tenant="fast") for _ in range(3)]
     store = FakeWebhookStore(jobs)
 
-    await sender(store, handler, per_tenant=2).send_due_once()
+    await run_until_empty(sender(store, handler, per_tenant=2), store)
 
     assert in_flight["max_slow"] == 2
     assert len(store.delivered) == 13
+
+
+
+async def run_until_empty(s, store, limit_s=5.0):
+    stop = asyncio.Event()
+    task = asyncio.create_task(s.run(stop, idle_interval=0.5))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + limit_s
+    while (store.jobs or s._tasks) and loop.time() < deadline:
+        await asyncio.sleep(0.005)
+    stop.set()
+    await task
+    return loop.time() - (deadline - limit_s)
+
+
+async def test_healthy_tenant_throughput_is_not_capped_by_the_idle_interval():
+    """T12 regression: 4 per claim with a 0.5 s pause capped one tenant at 8 webhooks/s."""
+    store = FakeWebhookStore([job() for _ in range(200)])
+
+    took = await run_until_empty(sender(store, lambda r: httpx.Response(200), per_tenant=4), store)
+
+    assert len(store.delivered) == 200
+    assert took < 2.0  # the old design needed 25 s
+
+
+async def test_slow_tenant_does_not_hold_back_a_fast_one():
+    fast_done_at = {}
+
+    async def handler(request):
+        if request.headers["X-Tenant"] == "slow":
+            await asyncio.sleep(1.0)
+        else:
+            fast_done_at.setdefault("first", asyncio.get_running_loop().time())
+        return httpx.Response(200)
+
+    store = FakeWebhookStore([job(tenant="slow") for _ in range(8)] + [job(tenant="fast") for _ in range(40)])
+    s = sender(store, handler, per_tenant=4)
+    stop = asyncio.Event()
+    started = asyncio.get_running_loop().time()
+    task = asyncio.create_task(s.run(stop, idle_interval=0.5))
+    while sum(1 for _ in store.delivered) < 40:
+        await asyncio.sleep(0.01)
+    fast_finished = asyncio.get_running_loop().time() - started
+    stop.set()
+    await task
+
+    assert fast_finished < 0.5  # all 40 fast deliveries done while the slow tenant's first round still runs

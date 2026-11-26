@@ -14,7 +14,9 @@ backoff. Something must also repair lost messages and expired leases.
 | **`retry_scheduled` + `next_attempt_at` in the row; one sweeper re-publishes due, lost and expired-lease rows** | Retry latency = backoff + ≤1 sweep interval |
 
 ## Decision
-Full-jitter exponential backoff (`uniform(0, min(60, 2^(n-1)))` s), `max_attempts` then `needs_human`. The sweeper
+Equal-jitter exponential backoff (`c/2 + uniform(0, c/2)` s with `c = min(60, 2^(n-1))`), `max_attempts` then
+`needs_human`. **T12 revision:** full jitter (`uniform(0, c)`) could fit all attempts into ~2 s, so a short blip
+exhausted the budget; the fixed half guarantees a minimum window (7.5 s with 5 attempts). The sweeper
 selects due rows with `FOR UPDATE SKIP LOCKED` (any number of replicas, no leader), stamps `enqueued_at`, then
 publishes. **T9 revision:** "lost message" recovery (staleness) runs only while the queue is nearly empty; under a
 backlog it re-published queued requests as duplicates (131k in one run) and fed the backlog.

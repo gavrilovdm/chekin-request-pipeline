@@ -27,6 +27,7 @@ Each task runs through one AI-native SDLC cycle and lands as one PR:
 | T9 | Load test and capacity report | locust run, throughput and p95 for 1 and 4 workers | T8 | merged ([#10](https://github.com/gavrilovdm/chekin-request-pipeline/pull/10)) |
 | T10 | README, ADRs, as-built architecture vs. target (+ CI integration job) | the architecture page compares target and as-built; gaps fixed or explained | T9 | merged ([#11](https://github.com/gavrilovdm/chekin-request-pipeline/pull/11)) |
 | T11 | Edge cases found by probing: API input errors, operator replay for `needs_human`, lease budget, result cap | every malformed input is a 422; replay chaos scenario | T10 | merged ([#17](https://github.com/gavrilovdm/chekin-request-pipeline/pull/17)) |
+| T12 | Fault campaign: property-based lifecycle tests, invariant checker, chaos under load until 3 clean runs | 3 consecutive clean campaign reports | T11 | in review |
 
 ## Schedule
 
