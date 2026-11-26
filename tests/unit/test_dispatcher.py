@@ -250,10 +250,36 @@ async def test_slow_tenant_does_not_hold_back_a_fast_one():
     stop = asyncio.Event()
     started = asyncio.get_running_loop().time()
     task = asyncio.create_task(s.run(stop, idle_interval=0.5))
-    while sum(1 for _ in store.delivered) < 40:
+    deadline = started + 5
+    while sum(1 for _ in store.delivered) < 40 and asyncio.get_running_loop().time() < deadline:
         await asyncio.sleep(0.01)
     fast_finished = asyncio.get_running_loop().time() - started
     stop.set()
     await task
 
     assert fast_finished < 0.5  # all 40 fast deliveries done while the slow tenant's first round still runs
+
+
+async def test_in_flight_deliveries_never_exceed_the_batch():
+    """Review finding: the claim asked for a full batch on top of the running tasks (up to 2 x batch - 1)."""
+    gate = asyncio.Event()
+    peak = {"now": 0, "max": 0}
+
+    async def handler(request):
+        peak["now"] += 1
+        peak["max"] = max(peak["max"], peak["now"])
+        await gate.wait()
+        peak["now"] -= 1
+        return httpx.Response(200)
+
+    store = FakeWebhookStore([job(tenant=f"t{i}") for i in range(30)])
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    s = WebhookSender(store, client, RetryPolicy(), per_tenant=4, batch=10, visibility=timedelta(seconds=60),
+                      timeout=5.0, clock=FakeClock())
+    await s.send_due_once()
+    await s.send_due_once()
+    await asyncio.sleep(0.05)
+
+    assert len(s._tasks) == 10 and peak["max"] <= 10
+    gate.set()
+    await s.wait_idle()

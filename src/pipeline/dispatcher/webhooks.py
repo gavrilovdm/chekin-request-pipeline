@@ -61,10 +61,11 @@ class WebhookSender:
 
     async def send_due_once(self) -> int:
         """Claim due jobs for tenants with free slots and start delivering them; returns how many were claimed."""
-        if len(self._tasks) >= self._batch:  # global back-pressure
+        room = self._batch - len(self._tasks)  # global back-pressure: never more than ``batch`` in flight
+        if room <= 0:
             return 0
         saturated = [tenant for tenant, n in self._claimed.items() if n >= self._per_tenant]
-        jobs = await self._store.claim_due(self._batch, self._visibility, self._per_tenant, saturated)
+        jobs = await self._store.claim_due(room, self._visibility, self._per_tenant, saturated)
         for job in jobs:
             self._claimed[job.tenant_id] = self._claimed.get(job.tenant_id, 0) + 1
             task = asyncio.create_task(self._deliver_and_release(job))

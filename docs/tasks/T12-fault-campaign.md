@@ -41,7 +41,9 @@ The task is done when the campaign passes **3 consecutive runs** with zero invar
 - `tests/invariants.py`: the I1–I4 checker over Postgres and the mock, for one run window. It prints the violations and exits non-zero.
 - `loadtest/chaos_campaign.py`: steady load plus a random fault every *N* seconds from the table above. When the load stops, it waits for the drain, then runs the invariant checker and a log scan (I5, I6). Writes a report to `loadtest/results/chaos-<n>.md`.
 - `Makefile`: `make chaos-campaign`.
-- `pyproject.toml`: `hypothesis` in the dev group.
+- `pyproject.toml`: `hypothesis` in the dev group; ruff `ASYNC110` ignored in `tests/**` (tests poll observable state on purpose).
+- `mock_downstream/app.py`: `webhooks_down`, a fault for the campaign (the tenant endpoint answers 503).
+- `src/pipeline/config.py`: `webhook_max_in_flight`, which bounds both the in-flight deliveries and the HTTP pool (review fix).
 - Fixes for whatever the campaign finds, each with a regression test, and the living docs.
 
 ## Proof

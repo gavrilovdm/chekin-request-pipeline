@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     webhook_timeout_s: float = 5.0
     webhook_max_attempts: int = 8
     webhook_per_tenant_concurrency: int = 4
+    webhook_max_in_flight: int = 200  # deliveries in flight across tenants; also the HTTP connection pool size
 
     metrics_port: int = 9100
     log_level: str = "INFO"
