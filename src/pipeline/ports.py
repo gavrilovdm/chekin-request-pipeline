@@ -96,8 +96,9 @@ class Publisher(Protocol):
 class SweepStore(Protocol):
     """Finds requests that need (re-)publishing and stamps them, so one sweep does not repeat the next."""
 
-    async def take_due(self, stale_after: timedelta, limit: int) -> list[tuple[UUID, str]]:
-        """Up to ``limit`` (id, status) pairs: lost publishes, due retries, expired leases."""
+    async def take_due(self, stale_after: timedelta, limit: int, recover_lost: bool) -> list[tuple[UUID, str]]:
+        """Up to ``limit`` (id, status) pairs: due retries and expired leases, plus, when ``recover_lost``,
+        requests whose message may have been lost (not claimed ``stale_after`` after the last publish)."""
         ...
 
 

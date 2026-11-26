@@ -125,6 +125,7 @@ async def run_dispatcher(settings: Settings) -> None:
         publisher,
         stale_after=timedelta(seconds=settings.stale_after_s),
         batch=settings.sweep_batch,
+        queue_depth=publisher.queue_depth,
     )
     client = httpx.AsyncClient(limits=httpx.Limits(max_connections=200))
     sender = WebhookSender(

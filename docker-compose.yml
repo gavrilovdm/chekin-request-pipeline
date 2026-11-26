@@ -18,8 +18,10 @@ x-app: &app
 services:
   api:
     <<: *app
+    # One Python process saturates one core (GIL) at ~230 POST/s on a laptop (T9), so the API runs 2 processes.
+    # Rate limits and the tenant cache are per process, as documented in ADR-0006.
     command: ["uvicorn", "pipeline.main:api_app", "--factory", "--host", "0.0.0.0", "--port", "8080",
-              "--no-access-log"]
+              "--no-access-log", "--workers", "2"]
     ports: ["8080:8080"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]

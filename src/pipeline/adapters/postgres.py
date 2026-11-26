@@ -127,19 +127,20 @@ class PgDispatchStore:
     Any number of dispatcher replicas can run: each gets a disjoint batch, no leader election needed.
     """
 
-    # A row is due when its trigger time has passed and it was not re-published since that trigger
-    # (or that re-publish is older than stale_after, i.e. the message itself may have been lost).
+    # A row is due when its trigger time has passed and it was not re-published since that trigger.
+    # $3 (recover_lost) adds the staleness clauses: a row whose message may have been lost. Those are only
+    # considered when the queue is nearly empty; during a backlog the message is waiting, not lost (T9).
     _TAKE_DUE = """
         WITH due AS (
             SELECT id FROM requests
-             WHERE (status = 'received'
+             WHERE ($3 AND status = 'received'
                     AND COALESCE(enqueued_at, created_at) < now() - $1::interval)
                 OR (status = 'retry_scheduled' AND next_attempt_at <= now()
                     AND (enqueued_at IS NULL OR enqueued_at < next_attempt_at
-                         OR enqueued_at < now() - $1::interval))
+                         OR ($3 AND enqueued_at < now() - $1::interval)))
                 OR (status = 'processing' AND locked_until < now()
                     AND (enqueued_at IS NULL OR enqueued_at < locked_until
-                         OR enqueued_at < now() - $1::interval))
+                         OR ($3 AND enqueued_at < now() - $1::interval)))
              LIMIT $2
                FOR UPDATE SKIP LOCKED
         )
@@ -199,9 +200,9 @@ class PgDispatchStore:
         row = await self._pool.fetchrow(self._HEALTH)
         return {key: float(row[key]) for key in ("needs_human", "oldest_unfinished_s", "webhooks_pending")}
 
-    async def take_due(self, stale_after: timedelta, limit: int) -> list[tuple[UUID, str]]:
-        """Stamp and return requests that need publishing."""
-        rows = await self._pool.fetch(self._TAKE_DUE, stale_after, limit)
+    async def take_due(self, stale_after: timedelta, limit: int, recover_lost: bool) -> list[tuple[UUID, str]]:
+        """Stamp and return requests that need publishing (see ``ports.SweepStore.take_due``)."""
+        rows = await self._pool.fetch(self._TAKE_DUE, stale_after, limit, recover_lost)
         return [(row["id"], row["status"]) for row in rows]
 
     async def claim_due(self, limit: int, visibility: timedelta, per_tenant: int) -> list[WebhookJob]:
