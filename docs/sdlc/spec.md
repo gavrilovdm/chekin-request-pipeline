@@ -42,7 +42,7 @@ received ──claim──▶ processing ──ok──────────�
 |---|---|
 | No loss | Postgres is the source of truth. The queue only carries ids. The sweeper repairs a lost publish or a lost message |
 | No duplicate effects | Conditional claim, plus a fencing token (`attempt`) on completion, plus an idempotency key to the downstream |
-| Bounded retries | Full-jitter exponential backoff, `max_attempts`, then `needs_human` |
+| Bounded retries | Equal-jitter exponential backoff (guaranteed minimum window), `max_attempts`, then `needs_human` |
 | Crash safety | Lease (`locked_until`). An expired lease is re-claimable. Graceful shutdown on SIGTERM |
 | Overload | Per-tenant token bucket (`429`). Load shedding on queue depth (`503` + `Retry-After`) |
 | Observability | Prometheus metrics, structured logs with `request_id`, `/healthz` and `/readyz`, alert rules |
@@ -60,7 +60,7 @@ received ──claim──▶ processing ──ok──────────�
 ## Out of scope
 
 - Schema migrations tool (the schema only reaches an empty database)
-- Postgres-down, fault-under-load and soak tests
+- Soak tests (hours) and load on real infrastructure
 - HA Postgres and partitioning
 - RabbitMQ cluster
 - KEDA

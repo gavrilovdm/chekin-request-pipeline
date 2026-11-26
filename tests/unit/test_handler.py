@@ -201,3 +201,22 @@ async def test_replayed_request_gets_a_full_retry_budget(repo, clock):
     assert await handler.handle(rid) is HandleResult.RETRY_SCHEDULED  # round attempt 1 of 3, not 4 > max
     assert repo.rows[rid].attempt == 4
     assert processor.calls[0].round_attempt == 1
+
+
+async def test_zombie_from_before_a_replay_cannot_complete_the_new_round(repo, clock):
+    """A worker freezes holding attempt 1; the request goes needs_human without it; after the operator replays,
+    the new round must not reuse attempt numbers, or the zombie's token would match again."""
+    from pipeline.domain.request import Transition
+
+    rid = repo.add()
+    zombie = await repo.claim(rid, LEASE)  # attempt 1, then the worker freezes
+    clock.advance(LEASE.total_seconds() + 1)
+    failing = make_handler(repo, clock, ScriptedProcessor(RetryableError("503")))
+    while repo.rows[rid].status is not Status.NEEDS_HUMAN:
+        await failing.handle(rid)
+        clock.advance(120)
+    await repo.replay(rid)
+    fresh = await repo.claim(rid, LEASE)
+
+    assert fresh.attempt != zombie.attempt and fresh.round_attempt == 1
+    assert not await repo.complete(rid, zombie.attempt, Transition(Status.DONE, result={"by": "zombie"}))

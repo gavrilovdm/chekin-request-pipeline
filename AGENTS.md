@@ -19,6 +19,7 @@ uv run pytest tests/unit     # fast tests, no Docker
 make up                      # postgres, rabbitmq, api, worker, dispatcher, downstream-mock
 make test-integration        # end-to-end and failure scenarios against the running stack (~1 min)
 make test-chaos              # only the six failure scenarios
+make chaos-campaign          # random faults under load + invariant check (~10 min), report in loadtest/results/
 docker compose exec dispatcher python -m pipeline replay [--id UUID]   # operator: resume needs_human
 make scale N=4               # run 4 workers
 make load WORKERS=4 USERS=300   # locust run + markdown report in loadtest/results/

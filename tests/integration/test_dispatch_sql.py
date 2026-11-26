@@ -1,5 +1,6 @@
 """Due selection for the sweeper and the webhook outbox against real Postgres."""
 
+import subprocess
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -9,6 +10,14 @@ from pipeline.adapters.postgres import PgDispatchStore, PgIntakeStore
 from tests.integration.conftest import set_row
 
 STALE = timedelta(seconds=60)
+
+
+@pytest.fixture
+def quiet_dispatcher():
+    """Freeze the stack's dispatcher so it cannot claim the rows these tests claim themselves."""
+    subprocess.run(["docker", "compose", "pause", "dispatcher"], check=True, capture_output=True)
+    yield
+    subprocess.run(["docker", "compose", "unpause", "dispatcher"], check=True, capture_output=True)
 
 
 @pytest.fixture
@@ -36,7 +45,7 @@ def ago(seconds):
     return datetime.now(UTC) - timedelta(seconds=seconds)
 
 
-async def test_due_selection_per_row_type(store, pool, dispatch):
+async def test_due_selection_per_row_type(store, pool, dispatch, quiet_dispatcher):
     await due_ids(dispatch)  # flush rows left by earlier tests
     lost = await new_row(store, pool, created_at=ago(120))
     fresh = await new_row(store, pool)
@@ -54,7 +63,7 @@ async def test_due_selection_per_row_type(store, pool, dispatch):
     assert not {fresh, retry_later, lease_alive, done} & due
 
 
-async def test_a_stamped_row_is_not_picked_again_until_stale(store, pool, dispatch):
+async def test_a_stamped_row_is_not_picked_again_until_stale(store, pool, dispatch, quiet_dispatcher):
     rid = await new_row(store, pool, status="retry_scheduled", attempt=1, next_attempt_at=ago(1))
 
     assert rid in await due_ids(dispatch)
@@ -64,12 +73,12 @@ async def test_a_stamped_row_is_not_picked_again_until_stale(store, pool, dispat
     assert rid in await due_ids(dispatch)
 
 
-async def test_webhook_claim_hides_rows_and_records_outcomes(store, pool, dispatch):
+async def test_webhook_claim_hides_rows_and_records_outcomes(store, pool, dispatch, quiet_dispatcher):
     rid = await new_row(store, pool, status="done", attempt=1, result={"ref": "R"}, webhook_pending=True,
                         webhook_next_at=ago(1))
 
-    jobs = [j for j in await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000) if j.request_id == rid]
-    again = [j for j in await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000) if j.request_id == rid]
+    jobs = [j for j in await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000, []) if j.request_id == rid]
+    again = [j for j in await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000, []) if j.request_id == rid]
 
     assert len(jobs) == 1 and again == []
     job = jobs[0]
@@ -94,18 +103,18 @@ async def test_delivered_clears_the_outbox_flag(store, pool, dispatch):
     assert not row["webhook_pending"] and row["webhook_status"] == "delivered"
 
 
-async def test_webhook_claim_caps_jobs_per_tenant(store, pool, dispatch):
+async def test_webhook_claim_caps_jobs_per_tenant(store, pool, dispatch, quiet_dispatcher):
     """A tenant with many due webhooks cannot fill the whole batch (head-of-line blocking)."""
-    await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000)  # flush earlier rows
+    await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000, [])  # flush earlier rows
     ids = [await new_row(store, pool, status="done", attempt=1, webhook_pending=True, webhook_next_at=ago(1))
            for _ in range(6)]
 
-    jobs = [j for j in await dispatch.claim_due(100, timedelta(seconds=60), 2) if j.request_id in ids]
+    jobs = [j for j in await dispatch.claim_due(100, timedelta(seconds=60), 2, []) if j.request_id in ids]
 
     assert len(jobs) == 2
 
 
-async def test_backlog_mode_skips_lost_message_recovery_but_not_due_work(store, pool, dispatch):
+async def test_backlog_mode_skips_lost_message_recovery_but_not_due_work(store, pool, dispatch, quiet_dispatcher):
     await due_ids(dispatch)
     lost = await new_row(store, pool, created_at=ago(120))
     retry_due = await new_row(store, pool, status="retry_scheduled", attempt=1, next_attempt_at=ago(1))
@@ -114,3 +123,13 @@ async def test_backlog_mode_skips_lost_message_recovery_but_not_due_work(store, 
 
     assert retry_due in due and lost not in due
     assert lost in await due_ids(dispatch, recover_lost=True)
+
+
+async def test_webhook_claim_skips_saturated_tenants(store, pool, dispatch, quiet_dispatcher):
+    await dispatch.claim_due(10_000, timedelta(seconds=60), 10_000, [])  # flush earlier rows
+    rid = await new_row(store, pool, status="done", attempt=1, webhook_pending=True, webhook_next_at=ago(1))
+
+    skipped = [j for j in await dispatch.claim_due(100, timedelta(seconds=60), 4, ["tenant-a"]) if j.request_id == rid]
+    taken = [j for j in await dispatch.claim_due(100, timedelta(seconds=60), 4, []) if j.request_id == rid]
+
+    assert skipped == [] and len(taken) == 1

@@ -10,7 +10,7 @@ This repository is a runnable prototype of that part. It also contains the decis
 |---|---|---|
 | Every accepted request reaches a final state | Postgres is the source of truth. A sweeper re-publishes lost messages, due retries and expired leases | `test_lost_publish_is_recovered_by_the_sweeper`, `test_broker_down_at_intake_is_recovered_without_client_retry`, `test_worker_killed_mid_processing_still_finishes` |
 | No duplicate effects under at-least-once delivery | Conditional claim, `attempt` as a fencing token, request id as the downstream `Idempotency-Key` | `test_stale_attempt_cannot_complete`, `test_duplicate_delivery_processes_once`, `test_client_replay_creates_one_request_and_one_effect` |
-| Failures are classified, retried with backoff, or handed to a human | Retryable vs. permanent errors; full-jitter backoff; `max_attempts`, then `needs_human` | `test_flaky_downstream_is_absorbed_by_retries`, `test_downstream_down_ends_in_needs_human_after_max_attempts` |
+| Failures are classified, retried with backoff, or handed to a human | Retryable vs. permanent errors; equal-jitter backoff with a guaranteed minimum window; `max_attempts`, then `needs_human` | `test_flaky_downstream_is_absorbed_by_retries`, `test_downstream_down_ends_in_needs_human_after_max_attempts` |
 | One tenant cannot hurt the others | Per-tenant token bucket; per-tenant webhook concurrency and claim cap | `test_noisy_tenant_is_limited_without_affecting_others`, `test_webhook_claim_caps_jobs_per_tenant` |
 | Throughput scales by adding workers | Stateless asyncio workers; the queue's prefetch bounds work in flight | Load test: end-to-end p50 drops from 48 s to **1.9 s** going from 1 to 4 workers ([results](loadtest/results/README.md)) |
 | Operators see trouble before tenants do | Metrics, JSON logs, readiness, alert rules; key signal: **age of the oldest unfinished request** | `test_dispatcher_gauges_reflect_the_database`, [`docs/alerts.yml`](docs/alerts.yml) |
@@ -127,7 +127,7 @@ This is [`worker/handler.py`](src/pipeline/worker/handler.py). It is transport-a
 | Postgres unreachable at intake | `503 + Retry-After`; `/readyz` fails; in-flight requests finish after recovery (deliveries are acked, the sweeper repairs) | `test_store_unavailable_is_a_503_with_retry_after` |
 | Unparseable message | Rejected to `requests.dead`; metric and alert | `test_rejected_message_goes_to_dead_letter_queue`, `test_unparseable_body_is_rejected_to_dead_letter` |
 | Backlog grows | `503 + Retry-After` above a queue-depth threshold; fails open if the depth is unknown | `test_deep_queue_sheds_load_before_writing`, `test_shedder_fails_open_when_broker_hangs` |
-| Tenant webhook endpoint hangs | At most 4 deliveries and 4 claims per tenant per batch, so other tenants are unaffected | `test_per_tenant_concurrency_is_capped`, `test_webhook_claim_caps_jobs_per_tenant` |
+| Tenant webhook endpoint hangs | At most 4 deliveries in flight per tenant; new jobs are claimed only for tenants with a free slot, so others are unaffected | `test_per_tenant_concurrency_is_capped`, `test_slow_tenant_does_not_hold_back_a_fast_one` |
 
 ## Decisions and the options considered
 
@@ -177,8 +177,7 @@ This is a prototype with its core guarantees proved, not a production system. In
 
 1. **Schema migrations.** The schema is applied by `docker-entrypoint-initdb.d`, so it only reaches an empty database. A migration tool (Alembic or sqitch) has to come before the first schema change on live data.
 2. **The failure and load tests that are still missing.**
-   - Postgres down, and Postgres failover.
-   - Faults injected while under load (today the faults and the load are tested apart).
+   - Postgres failover (a restart under load is covered by the chaos campaign).
    - A soak run of several hours, to show memory growth and table growth.
    - Several dispatcher and API replicas at once.
    - Load runs on real infrastructure: the laptop runs are 60 s on 4 shared vCPU, and the API's p95 target is not met there.

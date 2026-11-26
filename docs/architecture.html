@@ -152,7 +152,7 @@ stateDiagram-v2
     <tbody>
       <tr><td>Publish fails after the insert</td><td>Client still gets <code>202</code>. Sweeper re-enqueues <code>received</code> rows older than <code>stale_after</code>, once the queue is nearly empty</td><td>T8 · RabbitMQ down at intake</td></tr>
       <tr><td>Worker dies mid-processing</td><td>No ack, so RabbitMQ redelivers; the lease expires, so the claim succeeds again. The sweeper covers a lost message</td><td>T8 · <code>docker kill worker</code></td></tr>
-      <tr><td>Downstream slow or flaky (timeout, 5xx, 429)</td><td><code>retry_scheduled</code> with full-jitter backoff; sweeper re-enqueues when due</td><td>T8 · 50% errors</td></tr>
+      <tr><td>Downstream slow or flaky (timeout, 5xx, 429)</td><td><code>retry_scheduled</code> with equal-jitter backoff; sweeper re-enqueues when due</td><td>T8 · 50% errors</td></tr>
       <tr><td>Downstream down for long</td><td>After <code>max_attempts</code>: <code>needs_human</code>, metric, alert</td><td>T8 · downstream down</td></tr>
       <tr><td>Stale worker finishes late</td><td>Completion fenced by <code>attempt</code> is rejected; no overwrite</td><td>T2 · T3 unit and repo tests</td></tr>
       <tr><td>Client retries the POST</td><td>Same <code>id</code> for the same key and body; <code>422</code> for a different body</td><td>T4 · T8</td></tr>

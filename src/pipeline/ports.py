@@ -129,8 +129,10 @@ class WebhookJob:
 class WebhookStore(Protocol):
     """The outbox side of the requests table."""
 
-    async def claim_due(self, limit: int, visibility: timedelta, per_tenant: int) -> list[WebhookJob]:
-        """Take due jobs (at most ``per_tenant`` per tenant) and hide them for ``visibility``."""
+    async def claim_due(
+        self, limit: int, visibility: timedelta, per_tenant: int, exclude_tenants: list[str]
+    ) -> list[WebhookJob]:
+        """Take due jobs, at most ``per_tenant`` per tenant and none for ``exclude_tenants``; hide them."""
         ...
 
     async def mark_delivered(self, request_id: UUID, webhook_attempt: int) -> None:

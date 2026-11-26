@@ -135,13 +135,14 @@ async def run_dispatcher(settings: Settings) -> None:
         batch=settings.sweep_batch,
         queue_depth=publisher.queue_depth,
     )
-    client = httpx.AsyncClient(limits=httpx.Limits(max_connections=200))
+    # the pool must hold every in-flight delivery, or waiting for a connection eats the timeout of healthy endpoints
+    client = httpx.AsyncClient(limits=httpx.Limits(max_connections=settings.webhook_max_in_flight))
     sender = WebhookSender(
         store,
         client,
         RetryPolicy(settings.webhook_max_attempts, settings.retry_base_s, settings.retry_max_s),
         per_tenant=settings.webhook_per_tenant_concurrency,
-        batch=settings.sweep_batch,
+        batch=settings.webhook_max_in_flight,
         visibility=timedelta(seconds=settings.webhook_timeout_s * 4),
         timeout=settings.webhook_timeout_s,
     )
@@ -149,7 +150,7 @@ async def run_dispatcher(settings: Settings) -> None:
     try:
         await asyncio.gather(
             _every(settings.sweep_interval_s, sweeper.sweep_once, settings.sweep_batch, stop, "sweeper"),
-            _every(settings.sweep_interval_s / 2, sender.send_due_once, settings.sweep_batch, stop, "webhooks"),
+            sender.run(stop, idle_interval=settings.sweep_interval_s / 2),
             _every(10.0, lambda: refresh_gauges(store, publisher.queue_depth), 1, stop, "gauges"),
         )
     finally:

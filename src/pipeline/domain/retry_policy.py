@@ -1,4 +1,4 @@
-"""Exponential backoff with full jitter and a bounded number of attempts."""
+"""Exponential backoff with equal jitter and a bounded number of attempts."""
 
 import random
 from collections.abc import Callable
@@ -10,8 +10,10 @@ from datetime import timedelta
 class RetryPolicy:
     """How many times a request is attempted and how long to wait between attempts.
 
-    The delay after attempt ``n`` is ``uniform(0, min(max_delay, base_delay * 2**(n-1)))`` ("full jitter").
-    Jitter spreads retries in time, so a downstream that recovers from an outage is not hit by a synchronized wave.
+    The delay after attempt ``n`` is ``c/2 + uniform(0, c/2)`` with ``c = min(max_delay, base_delay * 2**(n-1))``
+    ("equal jitter"). Jitter spreads retries in time, so a downstream that recovers from an outage is not hit by a
+    synchronized wave; the fixed half guarantees a minimum retry window. With full jitter (``uniform(0, c)``) all
+    attempts could land within a couple of seconds and a short blip exhausted the budget (T12 fault campaign).
     """
 
     max_attempts: int = 5
@@ -32,4 +34,5 @@ class RetryPolicy:
 
     def delay(self, attempt: int, rand: Callable[[], float] = random.random) -> timedelta:
         """Jittered delay after ``attempt``. ``rand`` returns a float in [0, 1]; injectable for tests."""
-        return timedelta(seconds=rand() * self.ceiling(attempt))
+        ceiling = self.ceiling(attempt)
+        return timedelta(seconds=ceiling / 2 + rand() * ceiling / 2)
