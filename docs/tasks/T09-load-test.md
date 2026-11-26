@@ -36,13 +36,15 @@ With 200 ms downstream latency and 50 in flight per worker, one worker can proce
 - **The API runs 2 uvicorn processes** (`docker-compose.yml`). One process saturated a core at about 230 POST/s.
 - `tests/integration/test_failures.py`: scenario 1 asserts per key, not on the global success count. Rows that the sweeper recovers from other tests reach the mock during the scenario.
 - `loadtest/results/README.md` holds the summary table and the conclusions.
+- `docs/sdlc/spec.md`: "Areas of concern" item 2 (sweeper duplicates) is updated with the finding and the fix. Item 3 now says rate limits are per API process.
+- The `docker-compose.yml` comment refers to ADR-0006. The ADRs are written in T10, which is stacked on this PR.
 
 ## Risks
 
-- **Laptop numbers are not production numbers.** Docker has 4 vCPUs. Locust, the API, workers, Postgres and RabbitMQ all share them, and the API is a single uvicorn process. The report says this and draws conclusions about **shape** (what scales, what saturates first), not absolute capacity.
+- **Laptop numbers are not production numbers.** Docker has 4 vCPUs. Locust, the API, workers, Postgres and RabbitMQ all share them. The API runs 2 uvicorn processes after the first run. The report says this and draws conclusions about **shape** (what scales, what saturates first), not absolute capacity.
 - **Shared database.** Rows from earlier runs share the database. The report filters by the run's start time.
 
 ## Proof
 
 - `make check` passes.
-- All three reports are committed with the numbers. The README capacity section (T10) quotes them.
+- All three reports are committed with the numbers, along with a summary in `loadtest/results/README.md`. Quoting them in the README is T10's proof.
