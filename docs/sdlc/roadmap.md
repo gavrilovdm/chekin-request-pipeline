@@ -25,7 +25,7 @@ Each task runs through one AI-native SDLC cycle and lands as one PR:
 | T7 | Observability: metrics, structured logs, health, alert rules | `/metrics` exposes the documented series; `/readyz` fails when the DB is down | T6 |
 | T8 | Failure scenarios: worker killed, downstream flaky, downstream down, RabbitMQ down, idempotent replay | `make test-integration` covers all five | T7 |
 | T9 | Load test and capacity report | locust run, throughput and p95 for 1 and 4 workers | T8 |
-| T10 | README, ADRs, as-built architecture vs. target | the architecture page compares target and as-built; gaps fixed or explained | T9 |
+| T10 | README, ADRs, as-built architecture vs. target (+ CI integration job) | the architecture page compares target and as-built; gaps fixed or explained | T9 |
 
 ## Schedule
 
