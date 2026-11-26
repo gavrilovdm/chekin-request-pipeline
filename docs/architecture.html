@@ -56,7 +56,7 @@ td code,p code,li code{font:500 12.5px/1.4 var(--mono);background:var(--accent-s
 
 <div class="wrap">
 <header>
-  <div class="eyebrow">Chekin take-home · target architecture</div>
+  <div class="eyebrow">Chekin take-home · target and as-built architecture</div>
   <h1>What happens after a worker takes a request off the queue</h1>
   <p class="lede">A public API accepts requests from thousands of tenants. Postgres holds the truth, RabbitMQ only carries ids, and stateless asyncio workers claim, process and record each request exactly once in effect.</p>
   <div class="facts"><span><b>1M</b> req/hour ≈ <b>280</b> rps</span><span>peak ×5 ≈ <b>1.4k</b> rps</span><span>delivery: <b>at-least-once</b></span><span>effect: <b>idempotent</b></span></div>
@@ -70,7 +70,7 @@ td code,p code,li code{font:500 12.5px/1.4 var(--mono);background:var(--accent-s
   <div class="frame" id="f1"><pre class="mermaid">
 flowchart TB
   client(["Tenant client"])
-  api["api × N<br/>auth · validate · rate limit · load shedding"]
+  api["api × N (2 processes each)<br/>auth · validate · rate limit · load shedding"]
   pg[("Postgres<br/>requests table = source of truth")]
   mq[["RabbitMQ · quorum queue 'requests'<br/>message = request id"]]
   dlq[["requests.dead<br/>poison messages"]]
@@ -166,7 +166,7 @@ stateDiagram-v2
   <div class="cols">
     <div class="card"><h3>Capacity math</h3><ul>
       <li>280 rps × 0.5 s downstream ≈ 140 requests in flight</li>
-      <li>50 concurrent per worker → 3 workers on average, ~15 at peak</li>
+      <li>Planned: 50 in flight per worker → 3 workers on average, ~15 at peak</li><li>Measured: a worker process is CPU-bound at ~120 req/s → 3 worker cores on average, ~12 at peak</li>
       <li>≈3 DB writes per request → ~1k writes/s, ~5k at peak</li>
     </ul></div>
     <div class="card"><h3>Why asyncio in one process</h3><ul>
@@ -188,24 +188,39 @@ stateDiagram-v2
   <div class="tablewrap"><table>
     <thead><tr><th>#</th><th>Task</th><th>Proof</th><th>Status</th></tr></thead>
     <tbody>
-      <tr><td>T0</td><td>Foundation: intent, spec, roadmap, tooling, CI, review rules</td><td><code>make check</code>, CI green</td><td><span class="chip wip">PR #1 · review</span></td></tr>
-      <tr><td>T1</td><td>Domain: state machine, retry policy, errors</td><td>unit tests per transition, backoff bounds</td><td><span class="chip wip">PR #2 · review</span></td></tr>
-      <tr><td>T2</td><td>Worker core: ports, <code>RequestHandler</code></td><td>unit tests on fakes, 11 scenarios</td><td><span class="chip wip">PR #3 · review</span></td></tr>
-      <tr><td>T3</td><td>Persistence and messaging, compose infra</td><td>claim, fencing, idempotent insert vs real Postgres</td><td><span class="chip todo">planned</span></td></tr>
-      <tr><td>T4</td><td>Intake API</td><td>202, replay, 422, 401, 429, 503</td><td><span class="chip todo">planned</span></td></tr>
-      <tr><td>T5</td><td>Worker runtime, downstream mock</td><td>e2e: POST → done</td><td><span class="chip todo">planned</span></td></tr>
-      <tr><td>T6</td><td>Dispatcher: sweeper, webhooks</td><td>lost publish recovered, signed webhook</td><td><span class="chip todo">planned</span></td></tr>
-      <tr><td>T7</td><td>Observability</td><td><code>/metrics</code>, <code>/readyz</code></td><td><span class="chip todo">planned</span></td></tr>
-      <tr><td>T8</td><td>Failure scenarios</td><td>5 chaos tests</td><td><span class="chip todo">planned</span></td></tr>
-      <tr><td>T9</td><td>Load test, capacity report</td><td>throughput and p95, 1 vs 4 workers</td><td><span class="chip todo">planned</span></td></tr>
-      <tr><td>T10</td><td>README, ADRs, as-built comparison</td><td>this page, gaps closed or explained</td><td><span class="chip todo">planned</span></td></tr>
+      <tr><td>T0</td><td>Foundation: intent, spec, roadmap, tooling, CI, review rules</td><td><code>make check</code>, CI green</td><td><span class="chip done">PR #1 · merged</span></td></tr>
+      <tr><td>T1</td><td>Domain: state machine, retry policy, errors</td><td>unit tests per transition, backoff bounds</td><td><span class="chip done">PR #2 · merged</span></td></tr>
+      <tr><td>T2</td><td>Worker core: ports, <code>RequestHandler</code></td><td>unit tests on fakes, 11 scenarios</td><td><span class="chip done">PR #3 · merged</span></td></tr>
+      <tr><td>T3</td><td>Persistence and messaging, compose infra</td><td>claim, fencing, idempotent insert vs real Postgres</td><td><span class="chip done">PR #4 · merged</span></td></tr>
+      <tr><td>T4</td><td>Intake API</td><td>202, replay, 422, 401, 429, 503</td><td><span class="chip done">PR #5 · merged</span></td></tr>
+      <tr><td>T5</td><td>Worker runtime, downstream mock</td><td>e2e: POST → done</td><td><span class="chip done">PR #6 · merged</span></td></tr>
+      <tr><td>T6</td><td>Dispatcher: sweeper, webhooks</td><td>lost publish recovered, signed webhook</td><td><span class="chip done">PR #7 · merged</span></td></tr>
+      <tr><td>T7</td><td>Observability</td><td><code>/metrics</code>, <code>/readyz</code></td><td><span class="chip done">PR #8 · merged</span></td></tr>
+      <tr><td>T8</td><td>Failure scenarios</td><td>5 chaos tests</td><td><span class="chip done">PR #9 · merged</span></td></tr>
+      <tr><td>T9</td><td>Load test, capacity report</td><td>throughput and p95, 1 vs 4 workers</td><td><span class="chip done">PR #10 · merged</span></td></tr>
+      <tr><td>T10</td><td>README, ADRs, as-built comparison</td><td>this page, gaps closed or explained</td><td><span class="chip wip">PR #11 · review</span></td></tr>
     </tbody>
   </table></div>
 </section>
 
 <section id="asbuilt">
   <h2>Target vs as-built</h2>
-  <p class="note">Filled in at T10: each component and guarantee above is checked against the code, with gaps fixed or explained.</p>
+  <p>Every box and guarantee from the target above, checked against the merged code. The architecture held; the changes are refinements found by the verifier agent or by the load test, and each one is in the code with a test.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Target</th><th>As built</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>api × N: auth, rate limit, shedding</td><td>As planned. Runs 2 uvicorn processes: one process saturated a core at ~230 POST/s (T9). Body capped while streaming, tenant cache bounded (verifier, T4)</td><td><span class="chip done">changed</span></td></tr>
+      <tr><td>Postgres as source of truth, message = id</td><td>As planned (ADR-0001). Query timeout on every call (verifier, T3)</td><td><span class="chip done">as planned</span></td></tr>
+      <tr><td>RabbitMQ quorum queue, confirms, DLX</td><td>As planned. Unroutable publish now raises (<code>on_return_raises</code>, verifier T3)</td><td><span class="chip done">as planned</span></td></tr>
+      <tr><td>Worker: claim → process → classify → fenced complete</td><td>As planned. A retry is claimable only when due, so a duplicate message cannot skip the backoff (verifier, T2)</td><td><span class="chip done">changed</span></td></tr>
+      <tr><td>Sweeper: lost · due · expired lease</td><td>Lost-message recovery runs only while the queue is nearly empty: under backlog it produced 131k duplicates in one run (load test, T9)</td><td><span class="chip done">changed</span></td></tr>
+      <tr><td>Signed webhooks from the outbox</td><td>Per-tenant cap on claims as well as on concurrency, and fenced updates: one hanging endpoint could stall all tenants for ~10 min (verifier, T6)</td><td><span class="chip done">changed</span></td></tr>
+      <tr><td>Metrics, logs, alerts</td><td>As planned, plus the oldest-unfinished-request gauge as the main health signal and a test that it reflects real rows (verifier, T7)</td><td><span class="chip done">as planned</span></td></tr>
+      <tr><td>Capacity: ~250 req/s per worker (I/O-bound)</td><td>Measured ~120 req/s per worker process: CPU-bound. Sizing follows cores: 1M/h ≈ 3 worker cores, peak ≈ 12 (ADR-0007)</td><td><span class="chip gap">assumption corrected</span></td></tr>
+      <tr><td>Failure-mode table</td><td>Every row has a passing test; the five chaos scenarios run in CI on every PR</td><td><span class="chip done">proved</span></td></tr>
+      <tr><td>Out of scope: HA Postgres, RabbitMQ cluster, KEDA, fair queues, circuit breaker, GDPR</td><td>Not built; described as next steps in the README</td><td><span class="chip todo">next</span></td></tr>
+    </tbody>
+  </table></div>
 </section>
 </div>
 

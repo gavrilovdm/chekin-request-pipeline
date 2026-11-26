@@ -21,3 +21,19 @@ jobs:
       # The same single command as local "done": lint, docs rule and unit tests, with tool versions from uv.lock.
       - name: make check
         run: make check
+
+  # The whole stack in Docker: end-to-end flows and the five failure scenarios (worker killed, flaky and dead
+  # downstream, broker down at intake, client replay) run on every PR, not only on a laptop.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
+      - name: Start the stack
+        run: docker compose up -d --build --wait
+      - name: make test-integration
+        run: make test-integration
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose logs --tail=200

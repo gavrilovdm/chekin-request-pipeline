@@ -25,7 +25,10 @@ def compose(*args: str) -> None:
 
 
 async def calls_for(mock, rid: str) -> dict:
-    return (await mock.get(f"/admin/calls/{rid}")).json()
+    """Calls and success for one key; drops the mock's boot id (see the kill scenario)."""
+    data = (await mock.get(f"/admin/calls/{rid}")).json()
+    data.pop("boot_id", None)
+    return data
 
 
 async def wait_until(predicate, limit_s: float, step: float = 0.2):
@@ -39,15 +42,16 @@ async def test_worker_killed_mid_processing_still_finishes(api, mock, pool):
     await mock.put("/admin/config", json={"latency_ms": 3000, "jitter_ms": 0})
     rid = await submit(api)
 
-    async def processing():
-        return await pool.fetchval("SELECT status FROM requests WHERE id = $1::uuid", rid) == "processing"
+    async def call_in_flight_at_downstream():  # kill mid-call, not merely after the claim (CI found the race)
+        return (await calls_for(mock, rid))["calls"] == 1
 
-    await wait_until(processing, 10)
+    await wait_until(call_in_flight_at_downstream, 10)
+    boot_id = (await mock.get(f"/admin/calls/{rid}")).json()["boot_id"]
     try:
         compose("kill", "worker")
         await mock.put("/admin/config", json={"latency_ms": 20, "jitter_ms": 0})
     finally:
-        compose("up", "-d", "--wait", "worker")
+        compose("up", "-d", "--wait", "--no-deps", "worker")  # do not recreate the mock and lose its counters
 
     view = await wait_for(api, rid, limit_s=60)  # lease (15 s) expires, the sweeper re-publishes
 
@@ -55,7 +59,9 @@ async def test_worker_killed_mid_processing_still_finishes(api, mock, pool):
     # Both attempts used the request id as Idempotency-Key (a per-attempt key would show calls == 1 here), so the
     # downstream stored one result for two calls. A global success count is not used: other tests' requests
     # recovered by the sweeper also reach the mock while this one runs.
-    assert (await calls_for(mock, rid)) == {"calls": 2, "succeeded": True}
+    after = (await mock.get(f"/admin/calls/{rid}")).json()
+    assert after["boot_id"] == boot_id, "the mock restarted during the test; its counters are not comparable"
+    assert (after["calls"], after["succeeded"]) == (2, True)
 
 
 async def test_flaky_downstream_is_absorbed_by_retries(api, mock):
@@ -90,7 +96,7 @@ async def test_broker_down_at_intake_is_recovered_without_client_retry(api, mock
         assert await pool.fetchval("SELECT status FROM requests WHERE id = $1::uuid", rid) == "received"
     finally:
         compose("start", "rabbitmq")
-        compose("up", "-d", "--wait", "rabbitmq")
+        compose("up", "-d", "--wait", "--no-deps", "rabbitmq")
 
     view = await wait_for(api, rid, limit_s=120)
 
