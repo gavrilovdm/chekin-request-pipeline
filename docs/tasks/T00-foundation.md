@@ -23,7 +23,7 @@ Roadmap: [T0](../sdlc/roadmap.md) · Spec: [spec.md](../sdlc/spec.md)
 ## Risks
 
 - CI and local commands drift. Mitigation: CI runs `make check` itself, and ruff comes from `uv.lock` (`uv run`, not `uvx`).
-- The docs-check excludes live in `Makefile` and `.claude/kit.json` (hub-managed). Keep the two in step.
+- The docs-check excludes live in `Makefile` and `.claude/kit.json` (hub-managed). Keep the two in step. (Later: `kit.json` switched from `uvx ruff` to `uv run ruff`, so the hook, `make check` and CI all use the ruff from `uv.lock`.)
 
 ## Proof
 

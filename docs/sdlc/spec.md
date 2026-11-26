@@ -6,9 +6,9 @@ Stage: Design · Input: [intent.md](intent.md) · Decisions in detail: [`docs/ad
 
 | Component | Job | Scales by |
 |---|---|---|
-| `api` | Auth, validation, idempotent insert, publish. Answers `202` | Replicas behind a load balancer |
+| `api` | Auth, validation, idempotent insert, publish. Answers `202`. Runs 2 processes per replica | Replicas behind a load balancer |
 | `worker` | Claims a request, calls the processor, classifies the outcome, records the result | `--scale worker=N` (KEDA on queue lag in production) |
-| `dispatcher` | Sweeper: re-enqueues lost, due and expired-lease requests. Sends webhooks | Replicas. Coordinated by `SKIP LOCKED`, no leader election |
+| `dispatcher` | Sweeper: re-enqueues due retries and expired leases, and lost messages while the queue is nearly empty. Sends webhooks and refreshes the health gauges | Replicas. Coordinated by `SKIP LOCKED`, no leader election |
 | `postgres` | Source of truth for request state | Vertical, HA, partitioning (out of scope) |
 | `rabbitmq` | Work distribution. Quorum queue, DLX for poison messages | 3-node cluster (out of scope) |
 | `downstream-mock` | Fake external service with tunable latency and error rate | — |
@@ -45,7 +45,7 @@ received ──claim──▶ processing ──ok──────────�
 | Crash safety | Lease (`locked_until`). An expired lease is re-claimable. Graceful shutdown on SIGTERM |
 | Overload | Per-tenant token bucket (`429`). Load shedding on queue depth (`503` + `Retry-After`) |
 | Observability | Prometheus metrics, structured logs with `request_id`, `/healthz` and `/readyz`, alert rules |
-| Intake latency | p95 < 50 ms on a laptop at ~300 rps. The request path does one insert and one publish |
+| Intake latency | Target: p95 < 50 ms. The request path does one insert and one publish. **Measured (T9):** 11–35 ms unloaded; under ~300 rps on a 4-vCPU laptop shared by every service, p95 is 0.84 s, because the API competes for CPU with the workers and the databases. The target needs the API on its own cores ([load results](../../loadtest/results/README.md)) |
 
 ## Areas of concern
 

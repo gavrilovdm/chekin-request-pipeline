@@ -30,7 +30,9 @@ class Settings(BaseSettings):
 
     # dispatcher
     sweep_interval_s: float = 1.0
-    stale_after_s: float = 60.0  # re-publish a 'received' or re-published request not claimed after this long
+    # A request not claimed this long after its last publish may have lost its message; it is re-published, but
+    # only while the queue is nearly empty (depth < sweep_batch): under a backlog the message is waiting (T9).
+    stale_after_s: float = 60.0
     sweep_batch: int = 500
     webhook_timeout_s: float = 5.0
     webhook_max_attempts: int = 8

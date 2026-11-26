@@ -76,7 +76,7 @@ flowchart TB
   dlq[["requests.dead<br/>poison messages"]]
   w["worker × N<br/>asyncio · prefetch = concurrency"]
   ds["Downstream service<br/>(mock: latency, error rate)"]
-  d["dispatcher × N<br/>sweeper · webhook sender"]
+  d["dispatcher × N<br/>sweeper · webhook sender · health gauges"]
   obs["Prometheus metrics · JSON logs · alert rules"]
   client -->|"POST /v1/requests → 202 {id}"| api
   client -->|"GET /v1/requests/{id}"| api
@@ -149,7 +149,7 @@ stateDiagram-v2
   <div class="tablewrap"><table>
     <thead><tr><th>What breaks</th><th>What the system does</th><th>Proved by</th></tr></thead>
     <tbody>
-      <tr><td>Publish fails after the insert</td><td>Client still gets <code>202</code>. Sweeper re-enqueues <code>received</code> rows older than <code>stale_after</code></td><td>T8 · RabbitMQ down at intake</td></tr>
+      <tr><td>Publish fails after the insert</td><td>Client still gets <code>202</code>. Sweeper re-enqueues <code>received</code> rows older than <code>stale_after</code>, once the queue is nearly empty</td><td>T8 · RabbitMQ down at intake</td></tr>
       <tr><td>Worker dies mid-processing</td><td>No ack, so RabbitMQ redelivers; the lease expires, so the claim succeeds again. The sweeper covers a lost message</td><td>T8 · <code>docker kill worker</code></td></tr>
       <tr><td>Downstream slow or flaky (timeout, 5xx, 429)</td><td><code>retry_scheduled</code> with full-jitter backoff; sweeper re-enqueues when due</td><td>T8 · 50% errors</td></tr>
       <tr><td>Downstream down for long</td><td>After <code>max_attempts</code>: <code>needs_human</code>, metric, alert</td><td>T8 · downstream down</td></tr>
