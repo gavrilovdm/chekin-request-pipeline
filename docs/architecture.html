@@ -139,6 +139,7 @@ stateDiagram-v2
   processing --> needs_human: attempts exhausted
   done --> [*]
   failed --> [*]
+  needs_human --> retry_scheduled: operator replay
   needs_human --> [*]
   </pre></div>
   <p class="note">There is no <code>queued</code> state: <code>received</code> means accepted and maybe published. Duplicate publishes are harmless because the claim lets only one through. That saves one write per request.</p>
@@ -196,9 +197,10 @@ stateDiagram-v2
       <tr><td>T5</td><td>Worker runtime, downstream mock</td><td>e2e: POST → done</td><td><span class="chip done">PR #6 · merged</span></td></tr>
       <tr><td>T6</td><td>Dispatcher: sweeper, webhooks</td><td>lost publish recovered, signed webhook</td><td><span class="chip done">PR #7 · merged</span></td></tr>
       <tr><td>T7</td><td>Observability</td><td><code>/metrics</code>, <code>/readyz</code></td><td><span class="chip done">PR #8 · merged</span></td></tr>
-      <tr><td>T8</td><td>Failure scenarios</td><td>5 chaos tests</td><td><span class="chip done">PR #9 · merged</span></td></tr>
+      <tr><td>T8</td><td>Failure scenarios</td><td>5 chaos tests (6 after T11)</td><td><span class="chip done">PR #9 · merged</span></td></tr>
       <tr><td>T9</td><td>Load test, capacity report</td><td>throughput and p95, 1 vs 4 workers</td><td><span class="chip done">PR #10 · merged</span></td></tr>
       <tr><td>T10</td><td>README, ADRs, as-built comparison</td><td>this page, gaps closed or explained</td><td><span class="chip done">PR #11 · merged</span></td></tr>
+      <tr><td>T11</td><td>Edge cases found by probing the live stack</td><td>every malformed input is a 422; replay chaos scenario</td><td><span class="chip wip">PR · review</span></td></tr>
     </tbody>
   </table></div>
 </section>
@@ -218,6 +220,7 @@ stateDiagram-v2
       <tr><td>Metrics, logs, alerts</td><td>As planned, plus the oldest-unfinished-request gauge as the main health signal and a test that it reflects real rows (verifier, T7)</td><td><span class="chip done">as planned</span></td></tr>
       <tr><td>Capacity: ~250 req/s per worker (I/O-bound)</td><td>Measured ~120 req/s per worker process: CPU-bound. Sizing follows cores: 1M/h ≈ 3 worker cores, peak ≈ 12 (ADR-0007)</td><td><span class="chip gap">assumption corrected</span></td></tr>
       <tr><td>Failure-mode table</td><td>Every row has a passing test; the five chaos scenarios run in CI on every PR</td><td><span class="chip done">proved</span></td></tr>
+      <tr><td>Edge cases (probed after T10)</td><td>Malformed input returned 500 or dropped the connection; needs_human had no way out; demo lease shorter than the worst-case attempt. Fixed in T11: always-serialisable 422s, operator replay with an attempt offset, lease validated against processing + 2 × DB timeout</td><td><span class="chip done">changed</span></td></tr>
       <tr><td>Out of scope: HA Postgres, RabbitMQ cluster, KEDA, fair queues, circuit breaker, GDPR</td><td>Not built; described as next steps in the README</td><td><span class="chip todo">next</span></td></tr>
     </tbody>
   </table></div>

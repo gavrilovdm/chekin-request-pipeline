@@ -4,6 +4,7 @@ Entry points:
     uvicorn pipeline.main:api_app --factory   # intake API
     python -m pipeline worker                 # worker
     python -m pipeline dispatcher             # sweeper + webhooks
+    python -m pipeline replay [--limit N] [--id UUID ...]   # operator: resume needs_human requests
 """
 
 import asyncio
@@ -12,6 +13,7 @@ import signal
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from uuid import UUID
 
 import aio_pika
 import asyncpg
@@ -21,7 +23,13 @@ from fastapi import FastAPI
 from prometheus_client import start_http_server
 
 from pipeline.adapters.downstream import HttpProcessor
-from pipeline.adapters.postgres import PgDispatchStore, PgIntakeStore, PgRequestRepository, create_pool
+from pipeline.adapters.postgres import (
+    PgDispatchStore,
+    PgIntakeStore,
+    PgOperatorStore,
+    PgRequestRepository,
+    create_pool,
+)
 from pipeline.adapters.rabbitmq import RabbitPublisher, declare_topology, open_channel
 from pipeline.api.app import ApiDeps, create_app
 from pipeline.api.auth import TenantCache
@@ -171,3 +179,12 @@ async def _every(
             log.exception("loop.step_failed")
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=interval)
+
+
+async def run_replay(settings: Settings, limit: int, ids: list[UUID] | None) -> list[UUID]:
+    """Operator command: give ``needs_human`` requests a fresh retry budget; the sweeper publishes them."""
+    pool = await create_pool(settings.database_url, 2, settings.db_command_timeout_s)
+    try:
+        return await PgOperatorStore(pool).replay_needs_human(limit, ids)
+    finally:
+        await pool.close()

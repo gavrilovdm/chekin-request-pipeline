@@ -8,7 +8,7 @@ groups:
         labels: {severity: page}
         annotations:
           summary: "{{ $value }} new requests exhausted their attempts"
-          action: "Check pipeline_handled_total{result='retry_scheduled'} and the downstream; replay after the fix."
+          action: "Check pipeline_handled_total{result='retry_scheduled'} and the downstream; after the fix, run `python -m pipeline replay` (dispatcher container)."
 
       - alert: OldestUnfinishedRequestTooOld
         # The single best health signal: grows when workers, queue, sweeper or downstream are broken,

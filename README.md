@@ -15,7 +15,7 @@ This repository is a runnable prototype of that part. It also contains the decis
 | Throughput scales by adding workers | Stateless asyncio workers; the queue's prefetch bounds work in flight | Load test: end-to-end p50 drops from 48 s to **1.9 s** going from 1 to 4 workers ([results](loadtest/results/README.md)) |
 | Operators see trouble before tenants do | Metrics, JSON logs, readiness, alert rules; key signal: **age of the oldest unfinished request** | `test_dispatcher_gauges_reflect_the_database`, [`docs/alerts.yml`](docs/alerts.yml) |
 
-**Test counts:** 140 unit tests. 37 integration tests against the running stack, 5 of them failure scenarios. CI runs both suites on every PR.
+**Test counts:** 152 unit tests. 40 integration tests against the running stack, 6 of them failure scenarios. CI runs both suites on every PR.
 
 ## Try it (about 2 minutes)
 
@@ -26,7 +26,8 @@ curl -s -X POST localhost:8080/v1/requests \
   -H 'content-type: application/json' -d '{"type": "guest.register", "data": {"name": "Ana"}}'
 # → 202 {"id": "…", "status": "received", "status_url": "/v1/requests/…"}
 curl -s localhost:8080/v1/requests/<id> -H 'Authorization: Bearer demo-key-a'   # → "status": "done"
-make test-integration                     # end-to-end and failure scenarios (≈1 min)
+make test-integration                     # end-to-end and failure scenarios (≈1.5 min)
+docker compose exec dispatcher python -m pipeline replay   # operator: resume needs_human after a fix
 make load WORKERS=4 USERS=300             # load run with a markdown report
 ```
 
@@ -80,6 +81,7 @@ stateDiagram-v2
   processing --> failed: permanent error
   processing --> retry_scheduled: retryable, attempts left
   processing --> needs_human: attempts exhausted
+  needs_human --> retry_scheduled: operator replay
 ```
 
 There is no `queued` state. `received` means "accepted, maybe published", and duplicate publishes are harmless. Dropping the state saves one write per request.
@@ -120,6 +122,9 @@ This is [`worker/handler.py`](src/pipeline/worker/handler.py). It is transport-a
 | Stale worker finishes late | Fenced write dropped (`LEASE_LOST`) | `test_stale_worker_cannot_overwrite_after_losing_lease`, `test_stale_attempt_cannot_complete` |
 | Duplicate message for a scheduled retry | Not claimable until due, so the backoff is not skipped | `test_retry_not_yet_due_is_skipped`, `test_retry_not_yet_due_is_not_claimable` |
 | Client retries a POST | Same id; a different body with the same key → `422` | `test_client_replay_creates_one_request_and_one_effect`, `test_same_key_different_body_is_rejected` |
+| Downstream fixed after requests went to `needs_human` | `python -m pipeline replay` gives them a fresh retry budget; `attempt` keeps counting, so it stays a valid fencing token | `test_operator_replay_resumes_needs_human_after_the_fix`, `test_replayed_request_gets_a_full_retry_budget` |
+| Malformed body (invalid JSON, array, empty, deep nesting, NUL, unknown field, over-long key) | `422` with a JSON detail; the connection stays usable | `test_malformed_input_never_breaks_the_connection` |
+| Postgres unreachable at intake | `503 + Retry-After`; `/readyz` fails; in-flight requests finish after recovery (deliveries are acked, the sweeper repairs) | `test_store_unavailable_is_a_503_with_retry_after` |
 | Unparseable message | Rejected to `requests.dead`; metric and alert | `test_rejected_message_goes_to_dead_letter_queue`, `test_unparseable_body_is_rejected_to_dead_letter` |
 | Backlog grows | `503 + Retry-After` above a queue-depth threshold; fails open if the depth is unknown | `test_deep_queue_sheds_load_before_writing`, `test_shedder_fails_open_when_broker_hangs` |
 | Tenant webhook endpoint hangs | At most 4 deliveries and 4 claims per tenant per batch, so other tenants are unaffected | `test_per_tenant_concurrency_is_capped`, `test_webhook_claim_caps_jobs_per_tenant` |

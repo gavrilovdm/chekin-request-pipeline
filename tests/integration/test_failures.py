@@ -86,6 +86,23 @@ async def test_downstream_down_ends_in_needs_human_after_max_attempts(api, mock)
     assert (await calls_for(mock, rid))["calls"] == MAX_ATTEMPTS
 
 
+async def test_operator_replay_resumes_needs_human_after_the_fix(api, mock):
+    """Downstream down -> needs_human; downstream fixed -> operator replays -> done, with a fresh retry budget."""
+    await mock.put("/admin/config", json={"latency_ms": 5, "jitter_ms": 0, "down": True})
+    rid = await submit(api)
+    assert (await wait_for(api, rid, limit_s=60))["status"] == "needs_human"
+
+    await mock.put("/admin/config", json={"latency_ms": 5, "jitter_ms": 0})
+    command = ["docker", "compose", "exec", "-T", "dispatcher", "python", "-m", "pipeline", "replay", "--id", rid]
+    done = await asyncio.to_thread(subprocess.run, command, check=True, capture_output=True, text=True, timeout=60)
+    out = done.stdout
+    view = await wait_for(api, rid, limit_s=30)
+
+    assert "replayed 1 request(s)" in out
+    assert view["status"] == "done"
+    assert view["attempt"] == MAX_ATTEMPTS + 1  # absolute attempt keeps counting: it is the fencing token
+
+
 async def test_broker_down_at_intake_is_recovered_without_client_retry(api, mock, pool):
     compose("stop", "rabbitmq")
     try:

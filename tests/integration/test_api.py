@@ -40,3 +40,18 @@ async def test_unknown_key_is_rejected(api):
                               headers={"Authorization": "Bearer nope", "Idempotency-Key": "x"})
 
     assert response.status_code == 401
+
+
+async def test_malformed_input_never_breaks_the_connection(api):
+    """Every malformed body gets a 422 on the same keep-alive connection, and a normal POST still works after."""
+    bad = [b"{not json", b"", b"[1, 2]", b'{"type":"t","data":{},"evil":1}', b'{"type":"t","data":{"n":"A\\u0000"}}',
+           b'{"type":"t","data":' + b'{"a":' * 2000 + b"1" + b"}" * 2001]
+    for i, content in enumerate(bad):
+        headers = A | {"Idempotency-Key": f"bad-{uuid4()}-{i}", "content-type": "application/json"}
+        response = await api.post("/v1/requests", content=content, headers=headers)
+        assert response.status_code == 422, (content[:40], response.status_code)
+    too_long = await api.post("/v1/requests", json=BODY, headers=A | {"Idempotency-Key": "x" * 201})
+    ok = await api.post("/v1/requests", json=BODY, headers=A | {"Idempotency-Key": f"ok-{uuid4()}"})
+
+    assert too_long.status_code == 422
+    assert ok.status_code == 202

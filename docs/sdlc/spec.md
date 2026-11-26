@@ -19,7 +19,7 @@ Stage: Design · Input: [intent.md](intent.md) · Decisions in detail: [`docs/ad
 received ──claim──▶ processing ──ok──────────▶ done
    ▲                    │ ──permanent error──▶ failed
    │                    │ ──retryable error──▶ retry_scheduled ──due──▶ (claim again)
-   │                    │ ──attempts exhausted─▶ needs_human
+   │                    │ ──attempts exhausted─▶ needs_human ──operator replay──▶ retry_scheduled
    └── sweeper re-enqueues: lost publish, due retry, expired lease
 ```
 
@@ -33,7 +33,8 @@ received ──claim──▶ processing ──ok──────────�
 3. A terminal state triggers a webhook to the tenant's URL, if one is set.
    - The body is signed: `X-Signature: sha256=<hmac>`.
    - Delivery is retried with backoff and stops after a maximum.
-4. Requests that exhaust their attempts go to `needs_human` and are counted in a metric.
+4. Requests that exhaust their attempts go to `needs_human` and are counted in a metric. After the cause is fixed, an operator replays them (`python -m pipeline replay`) with a fresh retry budget.
+5. Malformed input is always a `4xx` with a JSON body, never a `500`; an unreachable database is a `503 + Retry-After`.
 
 ## Non-functional requirements
 

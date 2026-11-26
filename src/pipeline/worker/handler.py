@@ -66,15 +66,15 @@ class RequestHandler:
             log.info("request.skipped", request_id=str(request_id))
             return HandleResult.SKIPPED
 
-        if exhausted_before_processing(claimed.attempt, self._policy):
+        if exhausted_before_processing(claimed.round_attempt, self._policy):
             transition = Transition(
                 Status.NEEDS_HUMAN,
-                error=f"attempt {claimed.attempt} > max {self._policy.max_attempts} with no recorded outcome "
+                error=f"attempt {claimed.round_attempt} > max {self._policy.max_attempts} with no recorded outcome "
                 "(crash loop: the worker died while processing)",
             )
         else:
             outcome = await self._attempt(claimed)
-            transition = decide(claimed.attempt, outcome, self._policy, self._clock())
+            transition = decide(claimed.round_attempt, outcome, self._policy, self._clock())
 
         if not await self._repo.complete(request_id, claimed.attempt, transition):
             log.warning("request.lease_lost", request_id=str(request_id), attempt=claimed.attempt)

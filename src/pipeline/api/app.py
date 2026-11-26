@@ -12,12 +12,12 @@ import structlog
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from pipeline.api.auth import TenantCache
 from pipeline.api.rate_limit import TenantRateLimiter
 from pipeline.observability import INTAKE, INTAKE_SECONDS, PUBLISH_FAILURES
-from pipeline.ports import IntakeStore, Publisher, TenantRecord
+from pipeline.ports import IntakeStore, Publisher, StoreUnavailable, TenantRecord
 
 log = structlog.get_logger(__name__)
 
@@ -48,7 +48,9 @@ class ApiDeps:
 
 
 class RequestIn(BaseModel):
-    """An abstract job from a tenant: a type and an opaque data object."""
+    """An abstract job from a tenant: a type and an opaque data object. Unknown fields are rejected."""
+
+    model_config = ConfigDict(extra="forbid")
 
     type: str = Field(min_length=1, max_length=64)
     data: dict[str, Any]
@@ -94,8 +96,8 @@ def create_app(deps: ApiDeps | None = None, lifespan: Any = None) -> FastAPI:
         except Exception:
             INTAKE.labels("error").inc()  # an unhandled failure (e.g. Postgres down) must still be visible
             raise
-        if response.headers.get("X-Intake-Outcome") == "conflict":
-            INTAKE.labels("conflict").inc()
+        if response.headers.get("X-Intake-Outcome") in ("conflict", "unavailable"):
+            INTAKE.labels(response.headers["X-Intake-Outcome"]).inc()
         elif response.status_code == 202:
             replayed = response.headers.get("Idempotent-Replayed") == "true"
             INTAKE.labels("replayed" if replayed else "accepted").inc()
@@ -141,7 +143,10 @@ def create_app(deps: ApiDeps | None = None, lifespan: Any = None) -> FastAPI:
         try:
             body = RequestIn.model_validate_json(raw).model_dump()
         except ValidationError as exc:
-            raise HTTPException(422, exc.errors(include_url=False, include_context=False)) from exc
+            # No 'input' in the detail: it can hold raw bytes, which are not JSON-serialisable (T11).
+            raise HTTPException(422, exc.errors(include_url=False, include_context=False, include_input=False)) from exc
+        if "\\u0000" in json.dumps(body):
+            raise HTTPException(422, "NUL characters (\\u0000) are not allowed in request data")
 
         digest = payload_hash(body)
         created = await deps.store.create(caller.id, idempotency_key, body, digest)
@@ -178,6 +183,12 @@ def create_app(deps: ApiDeps | None = None, lifespan: Any = None) -> FastAPI:
             "created_at": view.created_at.isoformat(),
             "updated_at": view.updated_at.isoformat(),
         }
+
+    @app.exception_handler(StoreUnavailable)
+    async def store_unavailable(_request: Request, _exc: StoreUnavailable) -> JSONResponse:
+        """The database is unreachable: tell the client to retry instead of reporting a bug."""
+        return JSONResponse({"detail": "Temporarily unavailable, retry later"}, status_code=503,
+                            headers={"Retry-After": "5", "X-Intake-Outcome": "unavailable"})
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

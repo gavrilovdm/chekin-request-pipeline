@@ -154,3 +154,21 @@ async def test_tenant_lookup_by_key_hash(store):
 
     assert tenant is not None and tenant.id == "tenant-a"
     assert await store.tenant_by_key_hash("nope") is None
+
+
+async def test_replay_moves_only_needs_human_and_restarts_the_round(store, repo, pool):
+    from pipeline.adapters.postgres import PgOperatorStore
+
+    stuck = await new_request(store)
+    await set_row(pool, stuck, status="needs_human", attempt=5, last_error="503")
+    done = await new_request(store)
+    await set_row(pool, done, status="done", attempt=1)
+
+    replayed = await PgOperatorStore(pool).replay_needs_human(100, [stuck, done])
+
+    assert replayed == [stuck]
+    row = await status_of(pool, stuck)
+    assert row["status"] == "retry_scheduled" and row["attempt_offset"] == 5 and row["attempt"] == 5
+    claimed = await repo.claim(stuck, LEASE)
+    assert claimed.attempt == 6 and claimed.round_attempt == 1
+    assert (await status_of(pool, done))["status"] == "done"

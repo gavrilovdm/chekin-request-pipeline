@@ -1,5 +1,6 @@
 """Runtime settings, read from environment variables (prefix ``PIPELINE_``)."""
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,3 +41,12 @@ class Settings(BaseSettings):
 
     metrics_port: int = 9100
     log_level: str = "INFO"
+
+    @model_validator(mode="after")
+    def _lease_covers_the_worst_case_attempt(self) -> "Settings":
+        # claim and complete are each bounded by the DB command timeout, processing by its own timeout. A shorter
+        # lease lets a healthy slow attempt be re-claimed and processed twice (correct, but wasted work).
+        worst = self.processing_timeout_s + 2 * self.db_command_timeout_s
+        if self.lease_s <= worst:
+            raise ValueError(f"lease_s ({self.lease_s}) must exceed processing + 2 x DB timeout ({worst})")
+        return self
