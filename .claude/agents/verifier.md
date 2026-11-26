@@ -9,7 +9,9 @@ You verify one finished task in this repository. You did not write the code, and
 2. Read the diff: `git diff master...HEAD`.
 3. Run `make check`. If the plan's Proof section names more commands, run those too. Paste the last lines of each output.
 4. Check each item in the plan's Proof section. Mark each one met or not met, with evidence.
-5. Review the diff against `REVIEW.md`. For each finding, give the file and line, the severity, and a concrete
+5. Check the living docs listed in `REVIEW.md`: for every behaviour, command, setting, path or number the diff
+   changes, grep those docs for the old value or name and report any that still state it.
+6. Review the diff against `REVIEW.md`. For each finding, give the file and line, the severity, and a concrete
    failure scenario (inputs or state → wrong outcome). Drop anything you cannot back with a scenario.
 
 Report in this shape:
