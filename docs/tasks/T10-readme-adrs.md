@@ -25,6 +25,12 @@ Roadmap: [T10](../sdlc/roadmap.md)
 
   So the failure scenarios run on every PR, not only on a laptop.
 
+## Found by the new CI job
+
+- **A race in the kill scenario.** The worker could be killed after the claim but before the downstream call. The test now waits until the call is in flight at the downstream (`tests/integration/test_failures.py`).
+- **The CI runner recreated the mock.** When `up worker` brought the worker back, compose also recreated the mock and wiped its counters. Restarts now use `--no-deps`, and the mock reports a `boot_id` (`mock_downstream/app.py`), so a restart fails the test with a clear message instead of a wrong count.
+- **ADR-0007** gained an Options section (verifier nit).
+
 ## Order of work
 
 1. Write the ADRs, from the decisions already made in the task plans.
