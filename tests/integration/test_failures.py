@@ -39,10 +39,10 @@ async def test_worker_killed_mid_processing_still_finishes(api, mock, pool):
     await mock.put("/admin/config", json={"latency_ms": 3000, "jitter_ms": 0})
     rid = await submit(api)
 
-    async def processing():
-        return await pool.fetchval("SELECT status FROM requests WHERE id = $1::uuid", rid) == "processing"
+    async def call_in_flight_at_downstream():  # kill mid-call, not merely after the claim (CI found the race)
+        return (await calls_for(mock, rid))["calls"] == 1
 
-    await wait_until(processing, 10)
+    await wait_until(call_in_flight_at_downstream, 10)
     try:
         compose("kill", "worker")
         await mock.put("/admin/config", json={"latency_ms": 20, "jitter_ms": 0})

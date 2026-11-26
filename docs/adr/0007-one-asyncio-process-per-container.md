@@ -12,6 +12,13 @@ The interview asked: worker vs container vs thread vs process, and their limits.
 | Process | One core of CPU-bound Python (GIL); own memory and connection pool |
 | Container | CPU/memory quota; DB connections are the shared ceiling across all of them |
 
+## Options
+| Option | For | Against |
+|---|---|---|
+| Thread pool per worker | Familiar | GIL: no CPU parallelism; I/O concurrency is what asyncio already gives cheaper |
+| Process pool inside one container (multiprocessing) | Uses several cores per container | Duplicates what the orchestrator does; harder shutdown and health; one failure domain |
+| **One asyncio process per container, more containers** | Simple, one failure domain per process, scales with the orchestrator | Needs an orchestrator (compose / Kubernetes) to scale |
+
 ## Decision
 Each worker container runs one asyncio process with `prefetch = concurrency` (50) in flight. Horizontal scaling is
 by container count (`--scale`, KEDA on queue depth in production). The API runs 2 uvicorn processes.
