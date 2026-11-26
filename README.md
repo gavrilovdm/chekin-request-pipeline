@@ -168,11 +168,20 @@ What the runs show:
 
 ## Next steps for production
 
-1. **Postgres.** HA (Patroni or managed), partition `requests` by day, retention and archiving.
-2. **RabbitMQ.** A 3-node cluster for the quorum queue. KEDA scaling workers on queue depth and on the oldest-unfinished age.
-3. **Fair scheduling.** Weighted fair queues per tenant at processing time (only intake is per-tenant today). Tenant rate limits move to the gateway.
-4. **Downstream.** A circuit breaker per downstream, so a dead dependency stops burning attempts.
-5. **Security and compliance.** OAuth client credentials instead of static keys, a replay-protection timestamp in webhook signatures, PII encryption and GDPR retention for payloads.
+This is a prototype with its core guarantees proved, not a production system. In order of what blocks production first:
+
+1. **Schema migrations.** The schema is applied by `docker-entrypoint-initdb.d`, so it only reaches an empty database. A migration tool (Alembic or sqitch) has to come before the first schema change on live data.
+2. **The failure and load tests that are still missing.**
+   - Postgres down, and Postgres failover.
+   - Faults injected while under load (today the faults and the load are tested apart).
+   - A soak run of several hours, to show memory growth and table growth.
+   - Several dispatcher and API replicas at once.
+   - Load runs on real infrastructure: the laptop runs are 60 s on 4 shared vCPU, and the API's p95 target is not met there.
+3. **Postgres.** HA (Patroni or managed), partition `requests` by day, retention and archiving.
+4. **RabbitMQ and deployment.** A 3-node cluster for the quorum queue. KEDA scaling workers on queue depth and on the oldest-unfinished age. Kubernetes manifests, secrets management, dashboards, and alert rules checked in a real Prometheus.
+5. **Fair scheduling.** Weighted fair queues per tenant at processing time (only intake is per-tenant today). Tenant rate limits move to the gateway.
+6. **Downstream.** A circuit breaker per downstream, so a dead dependency stops burning attempts.
+7. **Security and compliance.** OAuth client credentials instead of static keys, TLS, demo keys out of the migrations, a replay-protection timestamp in webhook signatures, PII encryption and GDPR retention for payloads.
 
 ## How this was built
 
