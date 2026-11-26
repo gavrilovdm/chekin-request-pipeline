@@ -52,6 +52,14 @@ The infrastructure faults were absorbed without loss or duplicate effects. The p
   - `docs/alerts.yml`: the replay command;
   - architecture page: state diagram and as-built.
 
+## Review fixes (verifier)
+
+- README and ADR-0003 now describe the crash-loop guard as round-based. ADR-0003 states the lease budget rule; it was missing from the plan's living-docs list.
+- The fencing-after-replay test runs against real Postgres (`test_postgres.py`). Before, it only exercised the fake.
+- Replay disarms a pending `needs_human` webhook and resets `webhook_attempt` and `webhook_status`. A webhook with a non-final status can no longer go out, and the next final state gets a full delivery budget.
+- The NUL check walks the decoded strings, so the literal text `\\u0000` is accepted.
+- `OperatorInterventionError` (it includes `AdminShutdownError`) maps to `503`.
+
 ## Design notes
 
 - **Why an offset instead of resetting `attempt` on replay.**

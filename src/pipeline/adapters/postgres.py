@@ -12,8 +12,10 @@ from pipeline.domain.request import CLAIMABLE, Status, Transition, ensure_transi
 from pipeline.ports import ClaimedRequest, CreateResult, RequestView, StoreUnavailable, TenantRecord, WebhookJob
 
 _CLAIMABLE = [s.value for s in CLAIMABLE]
+# OperatorInterventionError covers CannotConnectNowError (starting up / shutting down) and AdminShutdownError
+# (connection terminated by an administrator command, e.g. `docker compose stop postgres` mid-query).
 _UNAVAILABLE = (OSError, TimeoutError, asyncpg.InterfaceError, asyncpg.PostgresConnectionError,
-                asyncpg.CannotConnectNowError)
+                asyncpg.exceptions.OperatorInterventionError)
 
 
 async def _available[T](call: Awaitable[T]) -> T:
@@ -243,7 +245,10 @@ class PgOperatorStore:
     _REPLAY = """
         UPDATE requests
            SET status = 'retry_scheduled', attempt_offset = attempt, next_attempt_at = now(), enqueued_at = NULL,
-               locked_until = NULL, updated_at = now()
+               locked_until = NULL, updated_at = now(),
+               -- disarm the needs_human webhook (it must not go out with a non-final status) and give the next
+               -- final state a full delivery budget
+               webhook_pending = false, webhook_attempt = 0, webhook_next_at = NULL, webhook_status = NULL
          WHERE id IN (SELECT id FROM requests
                        WHERE status = 'needs_human' AND ($2::uuid[] IS NULL OR id = ANY($2::uuid[]))
                        ORDER BY updated_at LIMIT $1

@@ -232,3 +232,20 @@ async def test_store_unavailable_is_a_503_with_retry_after():
 
     assert response.status_code == 503
     assert response.headers["Retry-After"] == "5"
+
+
+async def test_literal_backslash_u0000_text_is_accepted():
+    """Six characters of text that only look like an escape are valid data, not a NUL."""
+    async with make_client() as client:
+        response = await client.post("/v1/requests", content=b'{"type":"t","data":{"path":"C:\\\\u0000"}}', headers={
+            "Authorization": "Bearer key-a", "Idempotency-Key": "lit-1", "content-type": "application/json"})
+
+    assert response.status_code == 202, response.text
+
+
+async def test_nul_in_a_key_is_rejected():
+    async with make_client() as client:
+        response = await client.post("/v1/requests", content=b'{"type":"t","data":{"a\\u0000":1}}', headers={
+            "Authorization": "Bearer key-a", "Idempotency-Key": "nulkey", "content-type": "application/json"})
+
+    assert response.status_code == 422

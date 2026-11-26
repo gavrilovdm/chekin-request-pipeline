@@ -172,3 +172,19 @@ async def test_replay_moves_only_needs_human_and_restarts_the_round(store, repo,
     claimed = await repo.claim(stuck, LEASE)
     assert claimed.attempt == 6 and claimed.round_attempt == 1
     assert (await status_of(pool, done))["status"] == "done"
+    # a zombie from the first round (attempt 3) cannot complete the new round; the current holder can
+    assert not await repo.complete(stuck, 3, Transition(Status.DONE, result={"by": "zombie"}))
+    assert await repo.complete(stuck, 6, Transition(Status.DONE, result={"by": "round 2"}))
+
+
+async def test_replay_disarms_the_needs_human_webhook_and_resets_its_budget(store, pool):
+    from pipeline.adapters.postgres import PgOperatorStore
+
+    rid = await new_request(store)
+    await set_row(pool, rid, status="needs_human", attempt=5, webhook_pending=True, webhook_attempt=3,
+                  webhook_next_at=datetime.now(UTC) + timedelta(seconds=5))
+
+    await PgOperatorStore(pool).replay_needs_human(10, [rid])
+
+    row = await status_of(pool, rid)
+    assert row["webhook_pending"] is False and row["webhook_attempt"] == 0 and row["webhook_status"] is None

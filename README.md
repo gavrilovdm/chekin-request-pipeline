@@ -15,7 +15,7 @@ This repository is a runnable prototype of that part. It also contains the decis
 | Throughput scales by adding workers | Stateless asyncio workers; the queue's prefetch bounds work in flight | Load test: end-to-end p50 drops from 48 s to **1.9 s** going from 1 to 4 workers ([results](loadtest/results/README.md)) |
 | Operators see trouble before tenants do | Metrics, JSON logs, readiness, alert rules; key signal: **age of the oldest unfinished request** | `test_dispatcher_gauges_reflect_the_database`, [`docs/alerts.yml`](docs/alerts.yml) |
 
-**Test counts:** 152 unit tests. 40 integration tests against the running stack, 6 of them failure scenarios. CI runs both suites on every PR.
+**Test counts:** 153 unit tests. 41 integration tests against the running stack, 6 of them failure scenarios. CI runs both suites on every PR.
 
 ## Try it (about 2 minutes)
 
@@ -96,7 +96,7 @@ This is [`worker/handler.py`](src/pipeline/worker/handler.py). It is transport-a
    - only if the row is `received`, a *due* retry, or holds an expired lease.
 
    Zero rows means the request is already final or another worker holds it. Ack and stop.
-3. **Crash-loop guard.** If `attempt > max_attempts`, the previous attempts died mid-way. Go to `needs_human` without processing again.
+3. **Crash-loop guard.** If the attempt in this round (`attempt − attempt_offset`) is above `max_attempts`, the previous attempts died mid-way. Go to `needs_human` without processing again.
 4. **Process.** Call the downstream under a timeout, with `Idempotency-Key = request id`.
 5. **Classify.**
 

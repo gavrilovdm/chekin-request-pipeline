@@ -71,6 +71,17 @@ async def _read_capped(request: Request) -> bytes:
     return b"".join(chunks)
 
 
+def _has_nul(value: Any) -> bool:
+    """True if any decoded string (key or value) contains NUL, which Postgres jsonb cannot store."""
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, dict):
+        return any(_has_nul(k) or _has_nul(v) for k, v in value.items())
+    if isinstance(value, list):
+        return any(_has_nul(v) for v in value)
+    return False
+
+
 def payload_hash(payload: dict[str, Any]) -> str:
     """sha256 of canonical JSON, so key order does not make two equal bodies differ."""
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -145,7 +156,7 @@ def create_app(deps: ApiDeps | None = None, lifespan: Any = None) -> FastAPI:
         except ValidationError as exc:
             # No 'input' in the detail: it can hold raw bytes, which are not JSON-serialisable (T11).
             raise HTTPException(422, exc.errors(include_url=False, include_context=False, include_input=False)) from exc
-        if "\\u0000" in json.dumps(body):
+        if _has_nul(body):
             raise HTTPException(422, "NUL characters (\\u0000) are not allowed in request data")
 
         digest = payload_hash(body)

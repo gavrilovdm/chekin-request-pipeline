@@ -201,12 +201,3 @@ async def test_replayed_request_gets_a_full_retry_budget(repo, clock):
     assert await handler.handle(rid) is HandleResult.RETRY_SCHEDULED  # round attempt 1 of 3, not 4 > max
     assert repo.rows[rid].attempt == 4
     assert processor.calls[0].round_attempt == 1
-
-
-async def test_stale_fencing_token_is_rejected_after_replay(repo, clock):
-    rid = repo.add(status=Status.PROCESSING, attempt=5, attempt_offset=3,
-                   locked_until=clock.now + timedelta(seconds=10))
-
-    from pipeline.domain.request import Transition
-
-    assert not await repo.complete(rid, 2, Transition(Status.DONE, result={}))  # zombie from round 1, attempt 2
