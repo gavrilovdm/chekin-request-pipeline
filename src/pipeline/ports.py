@@ -11,14 +11,23 @@ from pipeline.domain.request import Transition
 Clock = Callable[[], datetime]
 
 
+class StoreUnavailable(Exception):
+    """The database cannot be reached right now; the caller should answer "retry later", not "bug"."""
+
+
 @dataclass(frozen=True)
 class ClaimedRequest:
-    """A request a worker now holds under a lease. ``attempt`` is 1-based and doubles as the fencing token."""
+    """A request a worker now holds under a lease.
+
+    ``attempt`` is absolute and monotonic: the fencing token. ``round_attempt`` is 1-based within the current round
+    (it restarts after an operator replay) and is what the retry budget counts.
+    """
 
     id: UUID
     tenant_id: str
     payload: dict[str, Any]
     attempt: int
+    round_attempt: int
 
 
 class RequestRepository(Protocol):
@@ -130,6 +139,14 @@ class WebhookStore(Protocol):
 
     async def mark_failed_attempt(self, request_id: UUID, webhook_attempt: int, next_at: datetime | None) -> None:
         """Delivery failed: retry at ``next_at``, or give up when it is ``None``. Fenced like ``mark_delivered``."""
+        ...
+
+
+class OperatorStore(Protocol):
+    """Operator actions on request state."""
+
+    async def replay_needs_human(self, limit: int, ids: list[UUID] | None = None) -> list[UUID]:
+        """Move ``needs_human`` requests back to a due retry with a fresh retry budget; return their ids."""
         ...
 
 

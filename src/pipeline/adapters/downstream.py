@@ -7,6 +7,8 @@ import httpx
 from pipeline.domain.errors import PermanentError, RetryableError
 from pipeline.ports import ClaimedRequest
 
+MAX_RESULT_BYTES = 64 * 1024
+
 
 class HttpProcessor:
     """Calls ``POST /process`` on the downstream with ``Idempotency-Key`` = request id.
@@ -37,6 +39,8 @@ class HttpProcessor:
             raise PermanentError(f"downstream {response.status_code}: {response.text[:200]}")
         if not response.content:
             return {}
+        if len(response.content) > MAX_RESULT_BYTES:  # stored on every request; a huge body would bloat the table
+            raise PermanentError(f"downstream result too large ({len(response.content)} bytes)")
         try:
             return response.json()
         except ValueError as exc:

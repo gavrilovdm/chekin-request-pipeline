@@ -7,7 +7,7 @@ from pipeline.adapters.downstream import HttpProcessor
 from pipeline.domain.errors import PermanentError, RetryableError
 from pipeline.ports import ClaimedRequest
 
-REQUEST = ClaimedRequest(uuid4(), "tenant-a", {"type": "t", "data": {}}, 1)
+REQUEST = ClaimedRequest(uuid4(), "tenant-a", {"type": "t", "data": {}}, 1, 1)
 
 
 def processor(handler):
@@ -54,3 +54,9 @@ async def test_empty_success_body_is_an_empty_result():
 async def test_redirects_and_non_json_bodies_are_permanent(response):
     with pytest.raises(PermanentError):
         await processor(lambda r: response).process(REQUEST)
+
+
+async def test_oversized_result_is_permanent():
+    big = {"blob": "x" * 70_000}
+    with pytest.raises(PermanentError, match="too large"):
+        await processor(lambda r: httpx.Response(200, json=big)).process(REQUEST)

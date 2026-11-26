@@ -1,6 +1,7 @@
 """Postgres implementations of the request ports. Every state change is one conditional statement."""
 
 import json
+from collections.abc import Awaitable
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -8,9 +9,21 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from pipeline.domain.request import CLAIMABLE, Status, Transition, ensure_transition
-from pipeline.ports import ClaimedRequest, CreateResult, RequestView, TenantRecord, WebhookJob
+from pipeline.ports import ClaimedRequest, CreateResult, RequestView, StoreUnavailable, TenantRecord, WebhookJob
 
 _CLAIMABLE = [s.value for s in CLAIMABLE]
+# OperatorInterventionError covers CannotConnectNowError (starting up / shutting down) and AdminShutdownError
+# (connection terminated by an administrator command, e.g. `docker compose stop postgres` mid-query).
+_UNAVAILABLE = (OSError, TimeoutError, asyncpg.InterfaceError, asyncpg.PostgresConnectionError,
+                asyncpg.exceptions.OperatorInterventionError)
+
+
+async def _available[T](call: Awaitable[T]) -> T:
+    """Translate "database unreachable" into the port's ``StoreUnavailable`` so callers need not know asyncpg."""
+    try:
+        return await call
+    except _UNAVAILABLE as exc:
+        raise StoreUnavailable(type(exc).__name__) from exc
 
 
 async def _init_connection(conn: asyncpg.Connection) -> None:
@@ -39,7 +52,7 @@ class PgRequestRepository:
            AND (   (status = ANY($3::text[])
                     AND (status <> 'retry_scheduled' OR COALESCE(next_attempt_at, now()) <= now()))
                 OR (status = 'processing' AND locked_until < now()))
-     RETURNING id, tenant_id, payload, attempt
+     RETURNING id, tenant_id, payload, attempt, attempt - attempt_offset AS round_attempt
     """
 
     # Fencing: only the attempt that holds the lease may record an outcome. The webhook flag is set in the same
@@ -62,7 +75,7 @@ class PgRequestRepository:
         row = await self._pool.fetchrow(self._CLAIM, request_id, lease, _CLAIMABLE)
         if row is None:
             return None
-        return ClaimedRequest(row["id"], row["tenant_id"], row["payload"], row["attempt"])
+        return ClaimedRequest(row["id"], row["tenant_id"], row["payload"], row["attempt"], row["round_attempt"])
 
     async def complete(self, request_id: UUID, attempt: int, transition: Transition) -> bool:
         """Record the outcome if ``attempt`` still holds the lease."""
@@ -101,7 +114,7 @@ class PgIntakeStore:
 
     async def tenant_by_key_hash(self, key_hash: str) -> TenantRecord | None:
         """Tenant owning the API key whose sha256 is ``key_hash``."""
-        row = await self._pool.fetchrow(self._TENANT, key_hash)
+        row = await _available(self._pool.fetchrow(self._TENANT, key_hash))
         return TenantRecord(row["id"], row["rate_per_sec"], row["burst"]) if row else None
 
     async def create(
@@ -109,15 +122,17 @@ class PgIntakeStore:
     ) -> CreateResult:
         """One insert on the happy path; a replay costs one extra read."""
         new_id = uuid4()
-        inserted = await self._pool.fetchval(self._CREATE, new_id, tenant_id, idempotency_key, payload_hash, payload)
+        inserted = await _available(
+            self._pool.fetchval(self._CREATE, new_id, tenant_id, idempotency_key, payload_hash, payload)
+        )
         if inserted is not None:
             return CreateResult(inserted, True, payload_hash)
-        row = await self._pool.fetchrow(self._EXISTING, tenant_id, idempotency_key)
+        row = await _available(self._pool.fetchrow(self._EXISTING, tenant_id, idempotency_key))
         return CreateResult(row["id"], False, row["payload_hash"])
 
     async def get(self, tenant_id: str, request_id: UUID) -> RequestView | None:
         """The request if it belongs to ``tenant_id``."""
-        row = await self._pool.fetchrow(self._GET, request_id, tenant_id)
+        row = await _available(self._pool.fetchrow(self._GET, request_id, tenant_id))
         return RequestView(**dict(row)) if row else None
 
 
@@ -221,3 +236,31 @@ class PgDispatchStore:
     async def mark_failed_attempt(self, request_id: UUID, webhook_attempt: int, next_at: datetime | None) -> None:
         """Failed: schedule the next try, or give up when ``next_at`` is None. Fenced like ``mark_delivered``."""
         await self._pool.execute(self._FAILED, request_id, webhook_attempt, next_at)
+
+
+class PgOperatorStore:
+    """``OperatorStore``: actions an operator takes after fixing the cause of a failure."""
+
+    # attempt stays monotonic (it is the fencing token); the offset gives the new round a full retry budget.
+    _REPLAY = """
+        UPDATE requests
+           SET status = 'retry_scheduled', attempt_offset = attempt, next_attempt_at = now(), enqueued_at = NULL,
+               locked_until = NULL, updated_at = now(),
+               -- disarm the needs_human webhook (it must not go out with a non-final status) and give the next
+               -- final state a full delivery budget
+               webhook_pending = false, webhook_attempt = 0, webhook_next_at = NULL, webhook_status = NULL
+         WHERE id IN (SELECT id FROM requests
+                       WHERE status = 'needs_human' AND ($2::uuid[] IS NULL OR id = ANY($2::uuid[]))
+                       ORDER BY updated_at LIMIT $1
+                         FOR UPDATE SKIP LOCKED)
+     RETURNING id
+    """
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def replay_needs_human(self, limit: int, ids: list[UUID] | None = None) -> list[UUID]:
+        """Replay up to ``limit`` ``needs_human`` requests (optionally only ``ids``); the sweeper publishes them."""
+        ensure_transition(Status.NEEDS_HUMAN, Status.RETRY_SCHEDULED)
+        rows = await self._pool.fetch(self._REPLAY, limit, ids)
+        return [row["id"] for row in rows]

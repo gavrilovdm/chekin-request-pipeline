@@ -19,8 +19,12 @@ takes over, and a worker can die after the downstream succeeded but before recor
 - **Complete:** applies only `WHERE status = 'processing' AND attempt = $n`; a stale worker's write is dropped
   (`LEASE_LOST`).
 - **Downstream:** `Idempotency-Key = request_id`, so a repeat after a crash returns the original result.
-- **Crash loop guard:** a claim with `attempt > max_attempts` goes to `needs_human` without processing.
+- **Crash loop guard:** a claim whose round attempt (`attempt − attempt_offset`) exceeds `max_attempts` goes to
+  `needs_human` without processing.
+- **Operator replay (T11):** `needs_human → retry_scheduled` sets `attempt_offset = attempt`. `attempt` itself
+  never resets, so a zombie worker from an earlier round can never match the fencing token.
 
 ## Consequences
-- Lease must exceed the processing timeout (enforced at start-up).
+- Lease must exceed the worst-case attempt: processing timeout + 2 × DB command timeout (claim and complete),
+  enforced by `Settings` at start-up.
 - A retry is claimable only when due: a duplicate message cannot skip the backoff (verifier finding, T2).

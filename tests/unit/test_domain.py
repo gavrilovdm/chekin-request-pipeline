@@ -42,11 +42,18 @@ def test_allowed_transitions(src, dst):
     ensure_transition(src, dst)
 
 
-@pytest.mark.parametrize("terminal", sorted(TERMINAL))
-def test_terminal_states_are_final(terminal):
+@pytest.mark.parametrize("final", [Status.DONE, Status.FAILED])
+def test_done_and_failed_are_final(final):
     for dst in Status:
         with pytest.raises(IllegalTransition):
-            ensure_transition(terminal, dst)
+            ensure_transition(final, dst)
+
+
+def test_needs_human_can_only_be_replayed():
+    ensure_transition(Status.NEEDS_HUMAN, Status.RETRY_SCHEDULED)
+    for dst in set(Status) - {Status.RETRY_SCHEDULED}:
+        with pytest.raises(IllegalTransition):
+            ensure_transition(Status.NEEDS_HUMAN, dst)
 
 
 ALLOWED_EDGES = {
@@ -57,6 +64,7 @@ ALLOWED_EDGES = {
     (Status.PROCESSING, Status.FAILED),
     (Status.PROCESSING, Status.RETRY_SCHEDULED),
     (Status.PROCESSING, Status.NEEDS_HUMAN),
+    (Status.NEEDS_HUMAN, Status.RETRY_SCHEDULED),  # operator replay
 }
 
 

@@ -189,3 +189,63 @@ async def test_invalid_body_is_rejected():
         response = await post(client, body={"data": {}})
 
     assert response.status_code == 422
+
+
+
+@pytest.mark.parametrize(
+    ("name", "content"),
+    [
+        ("invalid json", b"{not json"),
+        ("empty body", b""),
+        ("json array", b"[1, 2]"),
+        ("deep nesting", b'{"type":"t","data":' + b'{"a":' * 2000 + b"1" + b"}" * 2001),
+        ("unknown field", b'{"type":"t","data":{},"evil":1}'),
+        ("nul character", b'{"type":"t","data":{"name":"A\\u0000"}}'),
+    ],
+)
+async def test_malformed_input_is_a_422_never_a_500(name, content):
+    async with make_client() as client:
+        response = await client.post("/v1/requests", content=content, headers={
+            "Authorization": "Bearer key-a", "Idempotency-Key": f"bad-{name}", "content-type": "application/json"})
+        after = await post(client, idem=f"ok-after-{name}")
+
+    assert response.status_code == 422, response.text
+    assert after.status_code == 202  # the connection and the app are still fine
+
+
+async def test_too_long_idempotency_key_is_a_422():
+    async with make_client() as client:
+        response = await post(client, idem="x" * 201)
+
+    assert response.status_code == 422
+
+
+async def test_store_unavailable_is_a_503_with_retry_after():
+    from pipeline.ports import StoreUnavailable
+
+    class DownStore(FakeStore):
+        async def create(self, *args):
+            raise StoreUnavailable("postgres unreachable")
+
+    async with make_client(store=DownStore()) as client:
+        response = await post(client, idem="down-1")
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "5"
+
+
+async def test_literal_backslash_u0000_text_is_accepted():
+    """Six characters of text that only look like an escape are valid data, not a NUL."""
+    async with make_client() as client:
+        response = await client.post("/v1/requests", content=b'{"type":"t","data":{"path":"C:\\\\u0000"}}', headers={
+            "Authorization": "Bearer key-a", "Idempotency-Key": "lit-1", "content-type": "application/json"})
+
+    assert response.status_code == 202, response.text
+
+
+async def test_nul_in_a_key_is_rejected():
+    async with make_client() as client:
+        response = await client.post("/v1/requests", content=b'{"type":"t","data":{"a\\u0000":1}}', headers={
+            "Authorization": "Bearer key-a", "Idempotency-Key": "nulkey", "content-type": "application/json"})
+
+    assert response.status_code == 422

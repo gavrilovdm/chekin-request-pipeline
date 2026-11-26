@@ -27,6 +27,7 @@ class Row:
     payload: dict[str, Any]
     status: Status = Status.RECEIVED
     attempt: int = 0
+    attempt_offset: int = 0
     locked_until: datetime | None = None
     next_attempt_at: datetime | None = None
     result: dict[str, Any] | None = None
@@ -40,10 +41,10 @@ class InMemoryRepository:
         self.rows: dict[UUID, Row] = {}
 
     def add(self, *, status: Status = Status.RECEIVED, attempt: int = 0, locked_until: datetime | None = None,
-            next_attempt_at: datetime | None = None) -> UUID:
+            next_attempt_at: datetime | None = None, attempt_offset: int = 0) -> UUID:
         rid = uuid4()
         self.rows[rid] = Row(rid, "tenant-a", {"n": 1}, status=status, attempt=attempt, locked_until=locked_until,
-                             next_attempt_at=next_attempt_at)
+                             next_attempt_at=next_attempt_at, attempt_offset=attempt_offset)
         return rid
 
     async def claim(self, request_id: UUID, lease: timedelta) -> ClaimedRequest | None:
@@ -62,7 +63,7 @@ class InMemoryRepository:
         row.attempt += 1
         row.locked_until = self.clock() + lease
         row.history.append(Status.PROCESSING)
-        return ClaimedRequest(row.id, row.tenant_id, row.payload, row.attempt)
+        return ClaimedRequest(row.id, row.tenant_id, row.payload, row.attempt, row.attempt - row.attempt_offset)
 
     async def complete(self, request_id: UUID, attempt: int, transition: Transition) -> bool:
         row = self.rows[request_id]

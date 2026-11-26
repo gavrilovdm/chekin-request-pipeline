@@ -27,7 +27,7 @@ class Status(StrEnum):
 
 
 CLAIMABLE = frozenset({Status.RECEIVED, Status.RETRY_SCHEDULED})
-TERMINAL = frozenset({Status.DONE, Status.FAILED, Status.NEEDS_HUMAN})
+TERMINAL = frozenset({Status.DONE, Status.FAILED, Status.NEEDS_HUMAN})  # final for the pipeline; reported to tenants
 
 _ALLOWED: dict[Status, frozenset[Status]] = {
     Status.RECEIVED: frozenset({Status.PROCESSING}),
@@ -38,7 +38,8 @@ _ALLOWED: dict[Status, frozenset[Status]] = {
     ),
     Status.DONE: frozenset(),
     Status.FAILED: frozenset(),
-    Status.NEEDS_HUMAN: frozenset(),
+    # Operator replay after the cause is fixed (python -m pipeline replay). The only way out of a final state.
+    Status.NEEDS_HUMAN: frozenset({Status.RETRY_SCHEDULED}),
 }
 
 
